@@ -1,0 +1,20 @@
+# Secrets
+.env
+
+# Data and model weights (too large for git)
+data/
+checkpoints/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+*.egg-info/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS
+.DS_Store
+Thumbs.db
