@@ -1,17 +1,18 @@
 """
-Claude AI text collection script for AI detection training data.
+Ollama AI text collection script for AI detection training data.
 
 Usage:
-    pip install anthropic tqdm
-    export ANTHROPIC_API_KEY=your_key_here
-    python collect_claude_data.py
+    pip install requests tqdm python-dotenv
+    ollama serve
+    ollama pull llama3.2
+    python collect_ollama_data.py
 
 Outputs:
-    data/claude_samples.jsonl  - one JSON record per line
+    data/ollama_samples.jsonl  - one JSON record per line
     data/collection_log.txt    - progress and error log
 """
 
-import anthropic
+import requests
 import json
 import time
 import hashlib
@@ -21,22 +22,24 @@ import random
 from datetime import datetime, timezone
 from pathlib import Path
 from itertools import product
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
 
-OUTPUT_DIR   = Path("data")
-OUTPUT_FILE  = OUTPUT_DIR / "claude_samples.jsonl"
-LOG_FILE     = OUTPUT_DIR / "collection_log.txt"
+OUTPUT_DIR  = Path(os.getenv("OUTPUT_DIR", "data"))
+OUTPUT_FILE = OUTPUT_DIR / "ollama_samples.jsonl"
+LOG_FILE    = OUTPUT_DIR / "collection_log.txt"
 
-# Use Haiku for cost-efficient bulk collection.
-# Swap to "claude-sonnet-4-6" for higher quality at ~3x the cost.
-MODEL        = "claude-haiku-4-5-20251001"
-MAX_TOKENS   = 512
-RATE_LIMIT_RPM = 50          # requests per minute — stay safely under free-tier limits
-RETRY_LIMIT  = 3             # retries on transient errors
-RETRY_DELAY  = 5             # seconds between retries
+OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+MODEL           = os.getenv("OLLAMA_COLLECTION_MODEL", "llama3.2")
+RATE_LIMIT_RPM  = int(os.getenv("RATE_LIMIT_RPM", 200))
+MAX_TOKENS      = int(os.getenv("MAX_TOKENS", 512))
+RETRY_LIMIT     = int(os.getenv("RETRY_LIMIT", 3))
+RETRY_DELAY     = int(os.getenv("RETRY_DELAY", 5))
 
 # ---------------------------------------------------------------------------
 # Prompt library
@@ -69,7 +72,7 @@ TOPICS = [
 ]
 
 STYLES = [
-    "",                             # model default — most common in the wild
+    "",
     "Write formally.",
     "Write in a casual, conversational tone.",
     "Be concise — use short sentences.",
@@ -108,12 +111,12 @@ def build_prompt_list() -> list[dict]:
     ):
         prompt = build_prompt(domain, topic, template, style)
         jobs.append({
-            "prompt":      prompt,
-            "prompt_id":   prompt_id(prompt),
-            "domain":      domain,
-            "topic":       topic,
-            "style":       style or "default",
-            "template":    template,
+            "prompt":    prompt,
+            "prompt_id": prompt_id(prompt),
+            "domain":    domain,
+            "topic":     topic,
+            "style":     style or "default",
+            "template":  template,
         })
     return jobs
 
@@ -136,37 +139,40 @@ def load_seen_ids(output_file: Path) -> set[str]:
     return seen
 
 
-def call_claude(
-    client: anthropic.Anthropic,
-    prompt: str,
-    temperature: float,
-) -> str | None:
-    """
-    Single API call with retry logic.
-    Returns generated text or None on persistent failure.
-    """
+def check_ollama_running() -> bool:
+    """Verify Ollama is reachable before starting a long collection run."""
+    try:
+        response = requests.get(f"{OLLAMA_BASE_URL}/api/tags", timeout=5)
+        return response.status_code == 200
+    except requests.exceptions.ConnectionError:
+        return False
+
+
+def call_ollama(prompt: str, temperature: float) -> str | None:
     for attempt in range(1, RETRY_LIMIT + 1):
         try:
-            response = client.messages.create(
-                model=MODEL,
-                max_tokens=MAX_TOKENS,
-                temperature=temperature,
-                messages=[{"role": "user", "content": prompt}],
+            response = requests.post(
+                f"{OLLAMA_BASE_URL}/api/generate",
+                json={
+                    "model":  MODEL,
+                    "prompt": prompt,
+                    "stream": False,
+                    "options": {
+                        "temperature": temperature,
+                        "num_predict": MAX_TOKENS,
+                    },
+                },
+                timeout=60,
             )
-            return response.content[0].text
+            response.raise_for_status()
+            return response.json()["response"]
 
-        except anthropic.RateLimitError:
-            wait = RETRY_DELAY * attempt
-            logging.warning(f"Rate limit hit, waiting {wait}s (attempt {attempt})")
-            time.sleep(wait)
-
-        except anthropic.APIStatusError as e:
-            logging.error(f"API error {e.status_code}: {e.message} (attempt {attempt})")
-            if attempt < RETRY_LIMIT:
-                time.sleep(RETRY_DELAY)
+        except requests.exceptions.ConnectionError:
+            logging.error("Ollama not running — start it with: ollama serve")
+            return None
 
         except Exception as e:
-            logging.error(f"Unexpected error: {e} (attempt {attempt})")
+            logging.error(f"Ollama error: {e} (attempt {attempt})")
             if attempt < RETRY_LIMIT:
                 time.sleep(RETRY_DELAY)
 
@@ -174,36 +180,36 @@ def call_claude(
 
 
 def collect(jobs: list[dict], output_file: Path) -> None:
-    client = anthropic.Anthropic()  # reads ANTHROPIC_API_KEY from env
-    seen   = load_seen_ids(output_file)
-
-    # Filter to only uncollected jobs
+    seen    = load_seen_ids(output_file)
     pending = [j for j in jobs if j["prompt_id"] not in seen]
     total   = len(pending)
-    logging.info(f"Total jobs: {len(jobs)} | Already collected: {len(seen)} | Pending: {total}")
+
+    logging.info(
+        f"Total jobs: {len(jobs)} | Already collected: {len(seen)} | Pending: {total}"
+    )
 
     if total == 0:
         logging.info("Nothing to do — all prompts already collected.")
         return
 
-    # Shuffle so partial runs sample evenly across domains
     random.shuffle(pending)
 
-    collected  = 0
-    failed     = 0
-    interval   = 60.0 / RATE_LIMIT_RPM   # minimum seconds between requests
+    collected = 0
+    failed    = 0
+    interval  = 60.0 / RATE_LIMIT_RPM
 
     with open(output_file, "a", buffering=1) as out:
         for i, job in enumerate(pending, 1):
             t_start = time.monotonic()
 
-            # Collect one sample per temperature for each prompt
             for temp in TEMPERATURES:
-                text = call_claude(client, job["prompt"], temp)
+                text = call_ollama(job["prompt"], temp)
 
                 if text is None:
                     failed += 1
-                    logging.warning(f"[{i}/{total}] FAILED  prompt_id={job['prompt_id']} temp={temp}")
+                    logging.warning(
+                        f"[{i}/{total}] FAILED  prompt_id={job['prompt_id']} temp={temp}"
+                    )
                     continue
 
                 record = {
@@ -220,9 +226,8 @@ def collect(jobs: list[dict], output_file: Path) -> None:
                 out.write(json.dumps(record, ensure_ascii=False) + "\n")
                 collected += 1
 
-                # Rate-limit: sleep for the remainder of the per-request interval
-                elapsed = time.monotonic() - t_start
-                sleep_for = max(0.0, interval - elapsed)
+                elapsed    = time.monotonic() - t_start
+                sleep_for  = max(0.0, interval - elapsed)
                 if sleep_for > 0:
                     time.sleep(sleep_for)
                 t_start = time.monotonic()
@@ -275,7 +280,7 @@ def print_summary(output_file: Path) -> None:
         print(f"  temp={temp}   {count:>5}")
 
     word_counts = [r.get("word_count", 0) for r in records]
-    avg_words = sum(word_counts) / len(word_counts) if word_counts else 0
+    avg_words   = sum(word_counts) / len(word_counts) if word_counts else 0
     print(f"\nAverage word count: {avg_words:.0f}")
     print(f"{'='*50}\n")
 
@@ -296,11 +301,16 @@ def main() -> None:
         ],
     )
 
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        raise EnvironmentError(
-            "ANTHROPIC_API_KEY not set. "
-            "Run: export ANTHROPIC_API_KEY=your_key_here"
+    # Verify Ollama is running before starting
+    if not check_ollama_running():
+        raise RuntimeError(
+            "Cannot reach Ollama at "
+            f"{OLLAMA_BASE_URL}\n"
+            "Run:  ollama serve\n"
+            "Then: ollama pull llama3.2"
         )
+
+    logging.info(f"Ollama running at {OLLAMA_BASE_URL} | Model: {MODEL}")
 
     jobs = build_prompt_list()
     logging.info(
