@@ -23,7 +23,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from itertools import product
 from dotenv import load_dotenv
+import sys
 
+sys.stdout.reconfigure(encoding="utf-8")
+sys.stderr.reconfigure(encoding="utf-8")
 load_dotenv()
 
 # ---------------------------------------------------------------------------
@@ -75,7 +78,7 @@ STYLES = [
     "",
     "Write formally.",
     "Write in a casual, conversational tone.",
-    "Be concise — use short sentences.",
+    "Be concise - use short sentences.",
     "Be thorough and detailed.",
 ]
 
@@ -162,7 +165,7 @@ def call_ollama(prompt: str, temperature: float) -> str | None:
                         "num_predict": MAX_TOKENS,
                     },
                 },
-                timeout=60,
+                timeout=120,
             )
             response.raise_for_status()
             return response.json()["response"]
@@ -198,7 +201,7 @@ def collect(jobs: list[dict], output_file: Path) -> None:
     failed    = 0
     interval  = 60.0 / RATE_LIMIT_RPM
 
-    with open(output_file, "a", buffering=1) as out:
+    with open(output_file, "a", buffering=1, encoding="utf-8") as out:
         for i, job in enumerate(pending, 1):
             t_start = time.monotonic()
 
@@ -319,7 +322,7 @@ def main() -> None:
         f"{len(PROMPT_TEMPLATES)} templates × {len(STYLES)} styles"
     )
     logging.info(
-        f"With {len(TEMPERATURES)} temperatures each → "
+        f"With {len(TEMPERATURES)} temperatures each -> "
         f"{len(jobs) * len(TEMPERATURES)} total samples when complete"
     )
 
