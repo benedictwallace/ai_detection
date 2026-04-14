@@ -32,7 +32,7 @@ DETECTOR_BATCH_SIZE = int(os.getenv("DETECTOR_BATCH_SIZE", 16))
 
 
 # ---------------------------------------------------------------------------
-# Plain nn.Module — no PreTrainedModel, no version issues
+# Plain nn.Module - no PreTrainedModel, no version issues
 # ---------------------------------------------------------------------------
 
 class DesklibClassifier(nn.Module):
@@ -91,10 +91,6 @@ class Detector:
         self.model = DesklibClassifier(self.model_name, hidden_size).to(self.device)
 
         # Download checkpoint and remap weight keys to match our structure.
-        # Desklib saves weights with a "model." prefix but our backbone
-        # attribute is named "backbone", so we remap:
-        #   "model.encoder..."    -> "backbone.encoder..."
-        #   "classifier.weight"  -> "classifier.weight"  (unchanged)
         ckpt_path  = hf_hub_download(self.model_name, filename="model.safetensors")
         state_dict = load_file(ckpt_path)
 
@@ -153,22 +149,14 @@ class Detector:
             attention_mask=encoded["attention_mask"],
         ).squeeze(-1)                          # (B,)
 
-        # Desklib: higher logit = more AI. Invert sigmoid to get P(human).
+        # Higher percent = more AI. Invert sigmoid to get P(human).
         p_ai    = torch.sigmoid(logits)
         p_human = 1.0 - p_ai
         return p_human.cpu().tolist()
 
-    # ------------------------------------------------------------------
-    # Convenience helpers
-    # ------------------------------------------------------------------
-
-    def is_human(self, text: str, threshold: float = 0.5) -> bool:
-        """Returns True if P(human) >= threshold."""
-        return self.score(text) >= threshold
-
     def label(self, text: str, threshold: float = 0.5) -> str:
         """Returns 'human' or 'ai' string label."""
-        return "human" if self.is_human(text, threshold) else "ai"
+        return "human" if self.score(text) >= threshold else "ai"
 
     def evasion_rate(self, texts: list[str], threshold: float = 0.5) -> float:
         """
