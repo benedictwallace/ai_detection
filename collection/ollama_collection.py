@@ -34,7 +34,7 @@ load_dotenv()
 # ---------------------------------------------------------------------------
 
 OUTPUT_DIR  = Path(os.getenv("OUTPUT_DIR", "data"))
-OUTPUT_FILE = OUTPUT_DIR / "ollama_samples.jsonl"
+OUTPUT_FILE = OUTPUT_DIR / "raw/ollama_samples.jsonl"
 LOG_FILE    = OUTPUT_DIR / "collection_log.txt"
 
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
