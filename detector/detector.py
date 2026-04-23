@@ -32,7 +32,7 @@ DETECTOR_BATCH_SIZE = int(os.getenv("DETECTOR_BATCH_SIZE", 16))
 
 
 # ---------------------------------------------------------------------------
-# Plain nn.Module - no PreTrainedModel, no version issues
+# Plain nn.Module
 # ---------------------------------------------------------------------------
 
 class DesklibClassifier(nn.Module):
@@ -45,7 +45,7 @@ class DesklibClassifier(nn.Module):
 
     def __init__(self, model_name: str, hidden_size: int):
         super().__init__()
-        # Build structure only — weights loaded separately via load_state_dict
+        # Build structure only, weights loaded separately via load_state_dict
         config          = AutoConfig.from_pretrained(model_name)
         self.backbone   = AutoModel.from_config(config)
         self.classifier = nn.Linear(hidden_size, 1)
@@ -69,7 +69,7 @@ class Detector:
     Frozen oracle detector wrapping desklib/ai-text-detector-v1.01.
     Always returns P(human) as a float in [0, 1].
     Higher = text looks more human-written.
-    Weights are fully frozen — this model is never trained.
+    Weights are frozen
     """
 
     def __init__(self, model_name: str = DETECTOR_MODEL):
@@ -104,7 +104,7 @@ class Detector:
         self.model.load_state_dict(remapped, strict=True)
         logger.info("Weights loaded and remapped successfully.")
 
-        # Freeze everything — detector is never trained
+        # freeze
         for param in self.model.parameters():
             param.requires_grad = False
         self.model.eval()
@@ -174,7 +174,7 @@ class Detector:
 
 
 # ---------------------------------------------------------------------------
-# Quick test
+# test
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":

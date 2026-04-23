@@ -171,7 +171,7 @@ def call_ollama(prompt: str, temperature: float) -> str | None:
             return response.json()["response"]
 
         except requests.exceptions.ConnectionError:
-            logging.error("Ollama not running — start it with: ollama serve")
+            logging.error("Ollama not running, start it with: ollama serve")
             return None
 
         except Exception as e:
@@ -192,7 +192,7 @@ def collect(jobs: list[dict], output_file: Path) -> None:
     )
 
     if total == 0:
-        logging.info("Nothing to do — all prompts already collected.")
+        logging.info("Nothing to do, all prompts already collected.")
         return
 
     random.shuffle(pending)
