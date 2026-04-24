@@ -27,6 +27,7 @@ def semantic_score(original: str, rewrite: str) -> float:
         [original, rewrite],
         convert_to_tensor=True,
         device=str(_device),
+        show_progress_bar=False,
     )
 
     score = cosine_similarity(
