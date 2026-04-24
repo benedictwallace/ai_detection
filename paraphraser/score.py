@@ -40,7 +40,11 @@ def reward(original: str, rewrite: str) -> dict:
     d = _detector.score(rewrite)
     f = fluency_score(rewrite)
     s = semantic_score(original, rewrite)
-    r = W_DETECTOR * d + W_FLUENCY * f + W_SEMANTIC * s
+
+    if s < 0.4:
+        r = 0.0
+    else:
+        r = W_DETECTOR * d + W_FLUENCY * f + W_SEMANTIC * s
 
     return {
         "detector":  round(d, 4),
