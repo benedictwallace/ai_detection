@@ -3,13 +3,16 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
-os.environ["TQDM_DISABLE"] = "1"
+# os.environ["TQDM_DISABLE"] = "1"
+# os.environ["TRANSFORMERS_OFFLINE"] = "1"
+os.environ["HF_DATASETS_OFFLINE"] = "1"
 
 import json
 import random
 import logging
 from pathlib import Path
 from dotenv import load_dotenv
+from tqdm import tqdm
 
 from paraphraser.model import Paraphraser
 from paraphraser.score import score_candidates, top_k
@@ -79,22 +82,26 @@ def run_epoch(paraphraser, detector, texts, epoch):
     random.seed(SEED + epoch)
     random.shuffle(texts)
 
-    total = len(texts)
+    total      = len(texts)
     trained_on = 0
-    skipped = 0
-    losses = []
+    skipped    = 0
+    losses     = []
 
-    for i, text in enumerate(texts, 1):
+    bar = tqdm(texts, desc=f"Epoch {epoch}", unit="sample", ncols=80)
+
+    for text in bar:
         candidates = paraphraser.generate(text, n=N_CANDIDATES)
 
         if not candidates:
             skipped += 1
+            bar.set_postfix(trained=trained_on, skipped=skipped, loss="n/a")
             continue
 
         winners = top_k(text, candidates, k=TOP_K)
 
         if not winners:
             skipped += 1
+            bar.set_postfix(trained=trained_on, skipped=skipped, loss="n/a")
             continue
 
         for w in winners:
@@ -102,13 +109,8 @@ def run_epoch(paraphraser, detector, texts, epoch):
             losses.append(loss)
             trained_on += 1
 
-        if i % 20 == 0 or i == total:
-            avg_loss = sum(losses[-20:]) / len(losses[-20:]) if losses else 0
-            logger.info(
-                f"Epoch {epoch} | {i}/{total} samples | "
-                f"trained_on={trained_on} skipped={skipped} | "
-                f"avg_loss={avg_loss:.4f}"
-            )
+        avg_loss = sum(losses[-10:]) / len(losses[-10:])
+        bar.set_postfix(trained=trained_on, skipped=skipped, loss=f"{avg_loss:.4f}")
 
     return trained_on, skipped, losses
 

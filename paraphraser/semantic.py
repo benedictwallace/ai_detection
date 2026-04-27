@@ -1,10 +1,13 @@
 import torch
 from sentence_transformers import SentenceTransformer
 from torch.nn.functional import cosine_similarity
+import os
+
 
 _model  = None
 _device = None
 
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 def _load():
     global _model, _device

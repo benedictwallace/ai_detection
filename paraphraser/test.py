@@ -94,7 +94,7 @@ def run_test(checkpoint: str = CHECKPOINT):
         ]
     }
 
-    out = Path("data/test_results.json")
+    out = Path("data/test_results_25.json")
     with open(out, "w", encoding="utf-8") as f:
         json.dump(results, f, indent=2, ensure_ascii=False)
     print(f"Results saved to {out}")
