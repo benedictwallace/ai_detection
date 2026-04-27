@@ -100,8 +100,17 @@ def run_epoch(paraphraser, detector, texts, epoch):
         winners = top_k(text, candidates, k=TOP_K)
 
         if not winners:
+            scored = score_candidates(text, candidates)
+            if scored and scored[0]["reward"] > 0.2:
+                best = scored[0]
+                # Train with scaled-down reward so it still learns direction
+                loss = paraphraser.train_step(
+                    text, best["text"], best["reward"] * 0.3
+                )
+                losses.append(loss)
+                trained_on += 1
+                continue
             skipped += 1
-            bar.set_postfix(trained=trained_on, skipped=skipped, loss="n/a")
             continue
 
         for w in winners:
