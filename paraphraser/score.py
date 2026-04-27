@@ -68,19 +68,30 @@ def reward(original: str, rewrite: str) -> dict:
 
 
 def score_candidates(original: str, candidates: list[str]) -> list[dict]:
-    """
-    Score a list of candidate rewrites and return them sorted
-    by reward descending. Each item includes the rewrite text
-    and all score components.
-    """
+    _load_detector()
+    
+    # Batch all detector calls at once instead of one by one
+    d_scores = _detector.score_batch(candidates)
+    
     results = []
-    for c in candidates:
-        scores = reward(original, c)
-        results.append({"text": c, **scores})
-
+    for i, c in enumerate(candidates):
+        f = fluency_score(c)
+        s = semantic_score(original, c)
+        
+        d = d_scores[i]
+        if s < 0.4 or len(c.split()) < len(original.split()) * 0.6:
+            r = 0.0
+        else:
+            r = W_DETECTOR * d + W_FLUENCY * f + W_SEMANTIC * s
+        
+        results.append({
+            "text": c, "detector": round(d, 4),
+            "fluency": round(f, 4), "semantic": round(s, 4),
+            "reward": round(r, 4), "passes": r >= THRESHOLD
+        })
+    
     results.sort(key=lambda x: x["reward"], reverse=True)
     return results
-
 
 def top_k(original: str, candidates: list[str], k: int = 3) -> list[dict]:
     """
