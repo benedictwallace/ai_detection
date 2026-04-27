@@ -23,10 +23,6 @@ class Paraphraser:
         print(f"Paraphraser loaded: {model_name} on {self.device}")
 
     def generate(self, text: str, n: int = N_CANDIDATES) -> list[str]:
-        """
-        Generate n candidate rewrites for the input text.
-        Uses sampling with temperature for diversity across candidates.
-        """
         prompt  = f"paraphrase: {text}"
         encoded = self.tokenizer(
             prompt,
@@ -35,6 +31,11 @@ class Paraphraser:
             truncation=True,
         ).to(self.device)
 
+        # Estimate input length to enforce similar output length
+        input_length = encoded["input_ids"].shape[1]
+        min_length   = max(10, int(input_length * 0.7))
+        max_length   = int(input_length * 1.3)
+
         with torch.no_grad():
             outputs = self.model.generate(
                 **encoded,
@@ -42,8 +43,10 @@ class Paraphraser:
                 do_sample=True,
                 temperature=0.9,
                 top_p=0.95,
-                max_new_tokens=MAX_TOKENS,
-                early_stopping=True,
+                min_new_tokens=min_length,     # enforce minimum length
+                max_new_tokens=max_length,     # cap at 130% of input
+                length_penalty=1.5,            # penalise short sequences
+                early_stopping=False,          # don't stop early
             )
 
         candidates = [
@@ -51,7 +54,6 @@ class Paraphraser:
             for o in outputs
         ]
 
-        # Drop any empty or near-identical outputs
         seen, unique = set(), []
         for c in candidates:
             c = c.strip()

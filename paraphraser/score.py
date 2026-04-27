@@ -37,11 +37,23 @@ def reward(original: str, rewrite: str) -> dict:
     """
     _load_detector()
 
+    # Reject rewrites that are less than x% of the original length
+    original_words = len(original.split())
+    rewrite_words  = len(rewrite.split())
+    if rewrite_words < original_words * 0.5:
+        return {
+            "detector": 0.0,
+            "fluency":  0.0,
+            "semantic": 0.0,
+            "reward":   0.0,
+            "passes":   False,
+        }
+    
     d = _detector.score(rewrite)
     f = fluency_score(rewrite)
     s = semantic_score(original, rewrite)
 
-    if s < 0.4:
+    if s < 0.5:
         r = 0.0
     else:
         r = W_DETECTOR * d + W_FLUENCY * f + W_SEMANTIC * s
