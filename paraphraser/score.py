@@ -25,19 +25,8 @@ def _load_detector():
 
 
 def reward(original: str, rewrite: str) -> dict:
-    """
-    Score a candidate rewrite against the original.
-    Returns a dict with individual scores and the combined reward R.
-
-    R = W_DETECTOR * D + W_FLUENCY * F + W_SEMANTIC * S
-
-    D = P(human) from the frozen detector (higher = looks more human)
-    F = fluency score from GPT-2 perplexity (higher = more natural)
-    S = semantic similarity (cosine) (higher = meaning preserved)
-    """
     _load_detector()
 
-    # Reject rewrites that are less than x% of the original length
     original_words = len(original.split())
     rewrite_words  = len(rewrite.split())
     if rewrite_words < original_words * 0.5:
@@ -48,22 +37,29 @@ def reward(original: str, rewrite: str) -> dict:
             "reward":   0.0,
             "passes":   False,
         }
-    
+
     d = _detector.score(rewrite)
-    f = fluency_score(rewrite)
     s = semantic_score(original, rewrite)
 
-    if s < 0.5:
-        r = 0.0
-    else:
-        r = W_DETECTOR * d + W_FLUENCY * f + W_SEMANTIC * s
+    # Skip fluency if detector or semantic already make it a reject
+    if d < 0.2 or s < 0.5:
+        return {
+            "detector": round(d, 4),
+            "fluency":  0.0,
+            "semantic": round(s, 4),
+            "reward":   0.0,
+            "passes":   False,
+        }
+
+    f = fluency_score(rewrite)
+    r = W_DETECTOR * d + W_FLUENCY * f + W_SEMANTIC * s
 
     return {
-        "detector":  round(d, 4),
-        "fluency":   round(f, 4),
-        "semantic":  round(s, 4),
-        "reward":    round(r, 4),
-        "passes":    r >= THRESHOLD,
+        "detector": round(d, 4),
+        "fluency":  round(f, 4),
+        "semantic": round(s, 4),
+        "reward":   round(r, 4),
+        "passes":   r >= THRESHOLD,
     }
 
 
