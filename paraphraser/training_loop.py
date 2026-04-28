@@ -163,15 +163,20 @@ def train():
     logger.info("Loading data...")
     train_texts = load_texts(TRAIN_FILE)
     val_texts = load_texts(VAL_FILE)
+
+    # Optionally limit training set size for faster iteration
+    max_samples = int(os.getenv("MAX_TRAIN_SAMPLES", 0))
+    if max_samples > 0:
+        train_texts = train_texts[:max_samples]
+        logger.info(f"Limited to {max_samples} training samples")
+
     logger.info(f"Train: {len(train_texts)} | Val: {len(val_texts)}")
 
     logger.info("Loading models...")
     detector = Detector()
     paraphraser = Paraphraser()
 
-    # Measure baseline before any training
     baseline = measure_baseline(detector, val_texts[:100])
-
     best_evasion = baseline
     history = []
 
@@ -194,17 +199,15 @@ def train():
         evasion = evaluate(paraphraser, detector, val_texts, epoch)
 
         history.append({
-            "epoch":      epoch,
+            "epoch": epoch,
             "trained_on": trained_on,
-            "skipped":    skipped,
-            "avg_loss":   round(avg_loss, 4),
-            "evasion":    round(evasion, 4),
+            "skipped": skipped,
+            "avg_loss": round(avg_loss, 4),
+            "evasion": round(evasion, 4),
         })
 
-        # Save checkpoint each epoch
         paraphraser.save(epoch)
 
-        # Track best
         if evasion > best_evasion:
             best_evasion = evasion
             best_path = Path("checkpoints/paraphraser/best")
@@ -213,12 +216,10 @@ def train():
             paraphraser.tokenizer.save_pretrained(best_path)
             logger.info(f"New best model saved ({evasion:.1%})")
 
-        # Early stop if target reached
         if evasion >= EVASION_TARGET:
             logger.info(f"Evasion target reached ({evasion:.1%}). Stopping early.")
             break
 
-    # Save training history
     history_path = Path("data/train_history.json")
     with open(history_path, "w", encoding="utf-8") as f:
         json.dump({
@@ -227,7 +228,7 @@ def train():
             "best_evasion": round(best_evasion, 4),
         }, f, indent=2)
 
-    logger.info(f"\nTraining complete.")
+    logger.info(f"Training complete.")
     logger.info(f"Baseline evasion: {baseline:.1%}")
     logger.info(f"Best evasion: {best_evasion:.1%}")
     logger.info(f"History saved to: {history_path}")
