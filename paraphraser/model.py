@@ -41,12 +41,12 @@ class Paraphraser:
             outputs = self.model.generate(
                 **encoded,
                 num_return_sequences=n,
-                num_beam_groups=n,      # diverse beam search
-                num_beams=n,
-                diversity_penalty=0.8,  # force varied outputs
+                do_sample=True,
+                temperature=0.9,
+                top_p=0.95,
                 min_new_tokens=min_length,
                 max_new_tokens=max_length,
-                early_stopping=True,
+                early_stopping=False,
             )
 
         candidates = [
@@ -85,7 +85,7 @@ class Paraphraser:
 
         self.optimizer.zero_grad()
 
-        # Mixed precision forward pass — uses float16 on GPU, float32 on CPU
+        # Mixed precision forward pass uses float16 on GPU, float32 on CPU
         with torch.cuda.amp.autocast(enabled=False):
             loss          = self.model(**inputs, labels=labels).loss
             weighted_loss = loss * max(reward, 1e-8)
@@ -93,6 +93,7 @@ class Paraphraser:
         if torch.isnan(loss) or torch.isinf(loss):
             self.optimizer.zero_grad()
             return 0.0
+        
         # Scaler handles gradient scaling to prevent underflow in float16
         self.scaler.scale(weighted_loss).backward()
         self.scaler.unscale_(self.optimizer)
@@ -113,7 +114,7 @@ class Paraphraser:
         self.model     = T5ForConditionalGeneration.from_pretrained(checkpoint_path).to(self.device)
         self.tokenizer = T5Tokenizer.from_pretrained(checkpoint_path)
         self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=LR)
-        self.scaler    = torch.cuda.amp.GradScaler(enabled=self.device.type == "cuda")
+        self.scaler    = torch.cuda.amp.GradScaler(enabled=False)
         print(f"Checkpoint loaded: {checkpoint_path}")
 
 
