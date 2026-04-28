@@ -35,7 +35,7 @@ TRAIN_FILE = Path("data/processed/train.jsonl")
 VAL_FILE = Path("data/processed/val.jsonl")
 EPOCHS = int(os.getenv("EPOCHS", 3))
 N_CANDIDATES = int(os.getenv("N_CANDIDATES", 8))
-TOP_K = int(os.getenv("TOP_K", 3))
+TOP_K = int(os.getenv("TOP_K", 2))
 THRESHOLD = float(os.getenv("REWARD_THRESHOLD", 0.65))
 EVASION_TARGET = float(os.getenv("EVASION_TARGET", 70)) / 100
 SEED = 42
@@ -91,9 +91,7 @@ def run_epoch(paraphraser, detector, texts, epoch):
     bar = tqdm(texts, desc=f"Epoch {epoch}", unit="sample", ncols=80)
 
     for text in bar:
-        t = time.time()
         candidates = paraphraser.generate(text, n=N_CANDIDATES)
-        print(f"generate: {time.time()-t:.2f}s")
 
         if not candidates:
             skipped += 1
@@ -103,9 +101,7 @@ def run_epoch(paraphraser, detector, texts, epoch):
         winners = top_k(text, candidates, k=TOP_K)
 
         if not winners:
-            t = time.time()
             scored = score_candidates(text, candidates)
-            print(f"score: {time.time()-t:.2f}s")
             if scored and scored[0]["reward"] > 0.2:
                 best = scored[0]
                 # Train with scaled-down reward so it still learns direction
@@ -122,7 +118,7 @@ def run_epoch(paraphraser, detector, texts, epoch):
             loss = paraphraser.train_step(text, w["text"], w["reward"])
             losses.append(loss)
             trained_on += 1
-
+        
         avg_loss = sum(losses[-10:]) / len(losses[-10:])
         bar.set_postfix(trained=trained_on, skipped=skipped, loss=f"{avg_loss:.4f}")
 
