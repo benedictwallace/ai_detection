@@ -21,7 +21,7 @@ class Paraphraser:
         self.model     = T5ForConditionalGeneration.from_pretrained(model_name).to(self.device)
         self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=LR)
         # GradScaler for mixed precision disabled automatically on CPU
-        self.scaler = torch.amp.GradScaler("cuda", enabled=self.device.type == "cuda")
+        self.scaler = torch.cuda.amp.GradScaler(enabled=False)
         print(f"Paraphraser loaded: {model_name} on {self.device}")
 
     def generate(self, text: str, n: int = N_CANDIDATES) -> list[str]:
@@ -86,10 +86,13 @@ class Paraphraser:
         self.optimizer.zero_grad()
 
         # Mixed precision forward pass — uses float16 on GPU, float32 on CPU
-        with torch.amp.autocast("cuda", enabled=self.device.type == "cuda"):
+        with torch.cuda.amp.autocast(enabled=False):
             loss          = self.model(**inputs, labels=labels).loss
-            weighted_loss = loss * reward
+            weighted_loss = loss * max(reward, 1e-8)
 
+        if torch.isnan(loss) or torch.isinf(loss):
+            self.optimizer.zero_grad()
+            return 0.0
         # Scaler handles gradient scaling to prevent underflow in float16
         self.scaler.scale(weighted_loss).backward()
         self.scaler.unscale_(self.optimizer)
