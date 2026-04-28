@@ -7,6 +7,7 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 # os.environ["TRANSFORMERS_OFFLINE"] = "1"
 os.environ["HF_DATASETS_OFFLINE"] = "1"
 
+import time
 import json
 import random
 import logging
@@ -90,7 +91,9 @@ def run_epoch(paraphraser, detector, texts, epoch):
     bar = tqdm(texts, desc=f"Epoch {epoch}", unit="sample", ncols=80)
 
     for text in bar:
+        t = time.time()
         candidates = paraphraser.generate(text, n=N_CANDIDATES)
+        print(f"generate: {time.time()-t:.2f}s")
 
         if not candidates:
             skipped += 1
@@ -100,7 +103,9 @@ def run_epoch(paraphraser, detector, texts, epoch):
         winners = top_k(text, candidates, k=TOP_K)
 
         if not winners:
+            t = time.time()
             scored = score_candidates(text, candidates)
+            print(f"score: {time.time()-t:.2f}s")
             if scored and scored[0]["reward"] > 0.2:
                 best = scored[0]
                 # Train with scaled-down reward so it still learns direction
