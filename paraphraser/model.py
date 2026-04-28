@@ -6,11 +6,11 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-BASE_MODEL  = os.getenv("PARAPHRASER_BASE_MODEL", "google/flan-t5-base")
-CKPT_DIR    = Path(os.getenv("PARAPHRASER_CHECKPOINT_DIR", "checkpoints/paraphraser"))
-MAX_TOKENS  = int(os.getenv("MAX_TOKENS", 512))
+BASE_MODEL   = os.getenv("PARAPHRASER_BASE_MODEL", "google/flan-t5-base")
+CKPT_DIR     = Path(os.getenv("PARAPHRASER_CHECKPOINT_DIR", "checkpoints/paraphraser"))
+MAX_TOKENS   = int(os.getenv("MAX_TOKENS", 512))
 N_CANDIDATES = int(os.getenv("N_CANDIDATES", 8))
-LR          = float(os.getenv("LEARNING_RATE", 2e-5))
+LR           = float(os.getenv("LEARNING_RATE", 2e-5))
 
 
 class Paraphraser:
@@ -20,6 +20,8 @@ class Paraphraser:
         self.tokenizer = T5Tokenizer.from_pretrained(model_name)
         self.model     = T5ForConditionalGeneration.from_pretrained(model_name).to(self.device)
         self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=LR)
+        # GradScaler for mixed precision disabled automatically on CPU
+        self.scaler = torch.amp.GradScaler("cuda", enabled=self.device.type == "cuda")
         print(f"Paraphraser loaded: {model_name} on {self.device}")
 
     def generate(self, text: str, n: int = N_CANDIDATES) -> list[str]:
@@ -31,7 +33,6 @@ class Paraphraser:
             truncation=True,
         ).to(self.device)
 
-        # Estimate input length to enforce similar output length
         input_length = encoded["input_ids"].shape[1]
         min_length   = max(10, int(input_length * 0.7))
         max_length   = int(input_length * 1.3)
@@ -40,13 +41,12 @@ class Paraphraser:
             outputs = self.model.generate(
                 **encoded,
                 num_return_sequences=n,
-                do_sample=True,
-                temperature=0.9,
-                top_p=0.95,
-                min_new_tokens=min_length,     # enforce minimum length
-                max_new_tokens=max_length,     # cap at 130% of input
-                length_penalty=1.5,            # penalise short sequences
-                early_stopping=False,          # don't stop early
+                num_beam_groups=n,      # diverse beam search
+                num_beams=n,
+                diversity_penalty=0.8,  # force varied outputs
+                min_new_tokens=min_length,
+                max_new_tokens=max_length,
+                early_stopping=True,
             )
 
         candidates = [
@@ -64,46 +64,42 @@ class Paraphraser:
         return unique
 
     def train_step(self, original: str, rewrite: str, reward: float) -> float:
-        """
-        Single training step on one winning rewrite.
-        The loss is weighted by the reward so higher-scoring rewrites
-        exert a stronger gradient update.
-
-        Returns the raw loss value for logging.
-        """
         self.model.train()
 
-        prompt  = f"paraphrase: {original}"
-        inputs  = self.tokenizer(
+        prompt = f"paraphrase: {original}"
+        inputs = self.tokenizer(
             prompt,
             return_tensors="pt",
             max_length=MAX_TOKENS,
             truncation=True,
         ).to(self.device)
 
-        labels  = self.tokenizer(
+        labels = self.tokenizer(
             rewrite,
             return_tensors="pt",
             max_length=MAX_TOKENS,
             truncation=True,
         ).input_ids.to(self.device)
 
-        # T5 uses -100 as the ignore index for padding in labels
         labels[labels == self.tokenizer.pad_token_id] = -100
 
-        loss = self.model(**inputs, labels=labels).loss
-        weighted_loss = loss * reward
-
         self.optimizer.zero_grad()
-        weighted_loss.backward()
-        # Clip gradients to prevent large updates destabilising training
+
+        # Mixed precision forward pass — uses float16 on GPU, float32 on CPU
+        with torch.amp.autocast("cuda", enabled=self.device.type == "cuda"):
+            loss          = self.model(**inputs, labels=labels).loss
+            weighted_loss = loss * reward
+
+        # Scaler handles gradient scaling to prevent underflow in float16
+        self.scaler.scale(weighted_loss).backward()
+        self.scaler.unscale_(self.optimizer)
         torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
-        self.optimizer.step()
+        self.scaler.step(self.optimizer)
+        self.scaler.update()
 
         return loss.item()
 
     def save(self, epoch: int) -> None:
-        """Save a checkpoint after each training epoch."""
         path = CKPT_DIR / f"epoch_{epoch}"
         path.mkdir(parents=True, exist_ok=True)
         self.model.save_pretrained(path)
@@ -111,10 +107,10 @@ class Paraphraser:
         print(f"Checkpoint saved: {path}")
 
     def load(self, checkpoint_path: str) -> None:
-        """Load a previously saved checkpoint."""
         self.model     = T5ForConditionalGeneration.from_pretrained(checkpoint_path).to(self.device)
         self.tokenizer = T5Tokenizer.from_pretrained(checkpoint_path)
         self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=LR)
+        self.scaler    = torch.cuda.amp.GradScaler(enabled=self.device.type == "cuda")
         print(f"Checkpoint loaded: {checkpoint_path}")
 
 
