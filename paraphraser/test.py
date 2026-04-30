@@ -8,7 +8,7 @@ from paraphraser.model import Paraphraser
 from paraphraser.score import score_candidates
 from detector.detector import Detector
 
-CHECKPOINT = os.getenv("PARAPHRASER_CHECKPOINT", "checkpoints/paraphraser/best")
+CHECKPOINT = os.getenv("PARAPHRASER_CHECKPOINT", "checkpoints/paraphraser/epoch_2/")
 
 EXAMPLES = [
     "The utilization of artificial intelligence in modern healthcare systems has demonstrated significant improvements in diagnostic accuracy and patient outcomes across multiple clinical domains.",
@@ -25,7 +25,7 @@ def run_test(checkpoint: str = CHECKPOINT):
 
     best = Path(checkpoint)
     if best.exists():
-        paraphraser.load(checkpoint)
+        #paraphraser.load(checkpoint)
         print("Loaded fine-tuned checkpoint.")
     else:
         print("No checkpoint found, using base T5 model.")
@@ -62,7 +62,7 @@ def run_test(checkpoint: str = CHECKPOINT):
 
     rewrites = []
     for original in EXAMPLES:
-        candidates = paraphraser.generate(original, n=4)
+        candidates = paraphraser.generate_unconstrained(original, n=4)
         scored     = score_candidates(original, candidates)
         rewrites.append(scored[0]["text"] if scored else original)
 
@@ -88,7 +88,7 @@ def run_test(checkpoint: str = CHECKPOINT):
                 "reward":          scored[0]["reward"] if scored else None,
             }
             for ex, scored in [
-                (ex, score_candidates(ex, paraphraser.generate(ex, n=4)))
+                (ex, score_candidates(ex, paraphraser.generate_unconstrained(ex, n=4)))
                 for ex in EXAMPLES
             ]
         ]
