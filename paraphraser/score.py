@@ -3,6 +3,7 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import os
+from difflib import SequenceMatcher
 from dotenv import load_dotenv
 from detector.detector import Detector
 from paraphraser.fluency import fluency_score
@@ -63,8 +64,20 @@ def reward(original: str, rewrite: str) -> dict:
     }
 
 
-def score_candidates(original: str, candidates: list[str]) -> list[dict]:
-    _load_detector()
+def score_candidates(original: str, candidates: list[str], detector=None) -> list[dict]:
+    if detector is None:
+        _load_detector()
+
+    filtered = []
+    for c in candidates:
+        ratio = SequenceMatcher(None, original.lower(), c.lower()).ratio()
+        if ratio < 0.9:  # reject if too similar to original
+            filtered.append(c)
+    
+    if not filtered:
+        return []  # force model to try harder next time
+    
+    candidates = filtered
     
     # Batch all detector calls at once instead of one by one
     d_scores = _detector.score_batch(candidates)
