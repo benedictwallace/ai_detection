@@ -42,8 +42,8 @@ class Paraphraser:
         ).to(self.device)
 
         text_only  = self.tokenizer(text, return_tensors="pt").input_ids.shape[1]
-        min_length = max(10, int(text_only * 0.7))
-        max_length = int(text_only * 1.4)
+        min_length = max(8, int(text_only * 0.5))
+        max_length = int(text_only * 2.0)
 
         with torch.no_grad():
             outputs = self.model.generate(
@@ -63,45 +63,6 @@ class Paraphraser:
             self.tokenizer.decode(o, skip_special_tokens=True)
             for o in outputs
         ]
-
-        seen, unique = set(), []
-        for c in candidates:
-            c = c.strip()
-            if c and c not in seen and c != text.strip():
-                seen.add(c)
-                unique.append(c)
-
-        return unique
-
-    def generate_unconstrained(self, text: str, n: int = 4) -> list[str]:
-        """
-        Generate candidates without length constraints.
-        Use this for testing and result output only, not training.
-        """
-        prompt  = f"paraphrase: {text}"
-        encoded = self.tokenizer(
-            prompt,
-            return_tensors="pt",
-            max_length=MAX_TOKENS,
-            truncation=True,
-        ).to(self.device)
-
-        with torch.no_grad():
-            outputs = self.model.generate(
-                **encoded,
-                num_return_sequences=n,
-                do_sample=True,
-                temperature=0.9,
-                top_p=0.95,
-                max_new_tokens=200,
-            )
-
-        candidates = [
-            self.tokenizer.decode(o, skip_special_tokens=True)
-            for o in outputs
-        ]
-        
-        print(f"DEBUG raw candidates: {candidates}")
 
         seen, unique = set(), []
         for c in candidates:

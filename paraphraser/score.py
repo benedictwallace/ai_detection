@@ -88,7 +88,7 @@ def score_candidates(original: str, candidates: list[str], detector=None) -> lis
         s = semantic_score(original, c)
         
         d = d_scores[i]
-        if s < 0.4 or len(c.split()) < len(original.split()) * 0.6:
+        if s < 0.25 or len(c.split()) < len(original.split()) * 0.6:
             r = 0.0
         else:
             r = W_DETECTOR * d + W_FLUENCY * f + W_SEMANTIC * s
