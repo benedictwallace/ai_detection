@@ -66,6 +66,16 @@ def log_device_info():
 # Helpers
 # ---------------------------------------------------------------------------
 
+def normalise_rewards(scored: list[dict]) -> list[dict]:
+    rewards = [r["reward"] for r in scored]
+    mean = sum(rewards) / len(rewards)
+    std  = (sum((x - mean) ** 2 for x in rewards) / len(rewards)) ** 0.5
+    if std < 1e-6:
+        return scored  # all identical, skip normalisation
+    for r in scored:
+        r["reward_norm"] = (r["reward"] - mean) / (std + 1e-8)
+    return scored
+
 def load_texts(path: Path) -> list[str]:
     texts = []
     with open(path, encoding="utf-8") as f:
@@ -98,27 +108,35 @@ def run_epoch(paraphraser, detector, texts, epoch):
             bar.set_postfix(trained=trained_on, skipped=skipped, loss="n/a")
             continue
 
-        winners = top_k(text, candidates, k=TOP_K)
+        scored  = score_candidates(text, candidates)
+        scored  = normalise_rewards(scored)
+        winners = [r for r in scored if r["passes"]][:TOP_K]
 
         if not winners:
-            scored = score_candidates(text, candidates)
             if scored and scored[0]["reward"] > 0.2:
-                best = scored[0]
-                # Train with scaled-down reward so it still learns direction
                 loss = paraphraser.train_step(
-                    text, best["text"], best["reward"] * 0.3
+                    text, scored[0]["text"], 
+                    scored[0].get("reward_norm", scored[0]["reward"]) * 0.3
                 )
                 losses.append(loss)
                 trained_on += 1
-                continue
-            skipped += 1
+            else:
+                skipped += 1
             continue
 
-        for w in winners:
-            loss = paraphraser.train_step(text, w["text"], w["reward"])
-            losses.append(loss)
-            trained_on += 1
-        
+        # Contrastive: best vs worst
+        winner = winners[0]
+        loser  = scored[-1]
+
+        loss = paraphraser.train_step_contrastive(
+            text,
+            winner["text"], loser["text"],
+            winner.get("reward_norm", winner["reward"]),
+            loser.get("reward_norm", loser["reward"])
+        )
+        losses.append(loss)
+        trained_on += 1
+
         avg_loss = sum(losses[-10:]) / len(losses[-10:])
         bar.set_postfix(trained=trained_on, skipped=skipped, loss=f"{avg_loss:.4f}")
 
@@ -126,23 +144,39 @@ def run_epoch(paraphraser, detector, texts, epoch):
 
 
 def evaluate(paraphraser, detector, val_texts, epoch):
-    """
-    Generate one rewrite per val sample and measure evasion rate.
-    Uses top-1 candidate only for speed.
-    """
     rewrites = []
+    detector_scores = []
+    
     for text in val_texts:
         candidates = paraphraser.generate(text, n=4)
         if candidates:
-            scored = score_candidates(text, candidates)
+            scored = score_candidates(text, candidates, detector=detector)
             if scored:
-                rewrites.append(scored[0]["text"])
+                best = scored[0]["text"]
+                rewrites.append(best)
+                detector_scores.append(scored[0]["detector"])
+            else:
+                rewrites.append(text)
+                detector_scores.append(detector.score(text))
         else:
             rewrites.append(text)
+            detector_scores.append(detector.score(text))
 
     rate = detector.evasion_rate(rewrites)
+    avg_human_score = sum(detector_scores) / len(detector_scores) if detector_scores else 0.0
+    
+    # Score original texts for comparison
+    original_scores = [detector.score(t) for t in val_texts]
+    avg_original_score = sum(original_scores) / len(original_scores)
+
     logger.info(f"Epoch {epoch} | val evasion rate: {rate:.1%} (target: {EVASION_TARGET:.1%})")
-    return rate
+    logger.info(f"Epoch {epoch} | avg P(human) original: {avg_original_score:.4f} | rewrite: {avg_human_score:.4f} | delta: {avg_human_score - avg_original_score:+.4f}")
+    logger.info(f"Epoch {epoch} | detector score distribution: "
+                f"min={min(detector_scores):.3f} "
+                f"max={max(detector_scores):.3f} "
+                f"median={sorted(detector_scores)[len(detector_scores)//2]:.3f}")
+    
+    return rate, avg_human_score
 
 
 # ---------------------------------------------------------------------------
@@ -176,6 +210,8 @@ def train():
     logger.info("Loading models...")
     detector = Detector()
     paraphraser = Paraphraser()
+    total_steps = EPOCHS * len(train_texts)
+    paraphraser.setup_scheduler(total_steps)
 
     baseline = measure_baseline(detector, val_texts[:100])
     best_evasion = baseline
@@ -197,7 +233,7 @@ def train():
             f"avg_loss={avg_loss:.4f}"
         )
 
-        evasion = evaluate(paraphraser, detector, val_texts, epoch)
+        evasion, avg_human = evaluate(paraphraser, detector, val_texts, epoch)
 
         history.append({
             "epoch": epoch,
@@ -205,6 +241,7 @@ def train():
             "skipped": skipped,
             "avg_loss": round(avg_loss, 4),
             "evasion": round(evasion, 4),
+            "avg_human_score": round(avg_human, 4),
         })
 
         paraphraser.save(epoch)
