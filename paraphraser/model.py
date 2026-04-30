@@ -1,7 +1,7 @@
 import os
 import torch
 from pathlib import Path
-from transformers import T5ForConditionalGeneration, T5Tokenizer
+from transformers import T5ForConditionalGeneration, T5Tokenizer, get_linear_schedule_with_warmup
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -22,10 +22,18 @@ class Paraphraser:
         self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=LR)
         # GradScaler for mixed precision disabled automatically on CPU
         self.scaler = torch.cuda.amp.GradScaler(enabled=False)
+        self.scheduler = None
         print(f"Paraphraser loaded: {model_name} on {self.device}")
 
+    def setup_scheduler(self, total_steps: int) -> None:
+        self.scheduler = get_linear_schedule_with_warmup(
+            self.optimizer,
+            num_warmup_steps=total_steps // 10,
+            num_training_steps=total_steps
+        )
+
     def generate(self, text: str, n: int = N_CANDIDATES) -> list[str]:
-        prompt  = f"paraphrase: {text}"
+        prompt = f"Rewrite this sentence using synonyms and a different structure. Do not copy the original wording: {text}"
         encoded = self.tokenizer(
             prompt,
             return_tensors="pt",
@@ -33,17 +41,19 @@ class Paraphraser:
             truncation=True,
         ).to(self.device)
 
-        input_length = encoded["input_ids"].shape[1]
-        min_length   = max(10, int(input_length * 0.7))
-        max_length   = int(input_length * 1.3)
+        text_only  = self.tokenizer(text, return_tensors="pt").input_ids.shape[1]
+        min_length = max(10, int(text_only * 0.7))
+        max_length = int(text_only * 1.4)
 
         with torch.no_grad():
             outputs = self.model.generate(
                 **encoded,
                 num_return_sequences=n,
                 do_sample=True,
-                temperature=0.9,
+                temperature=1.3,
                 top_p=0.95,
+                top_k=50,
+                repetition_penalty=1.3,
                 min_new_tokens=min_length,
                 max_new_tokens=max_length,
                 early_stopping=False,
@@ -62,6 +72,73 @@ class Paraphraser:
                 unique.append(c)
 
         return unique
+
+    def generate_unconstrained(self, text: str, n: int = 4) -> list[str]:
+        """
+        Generate candidates without length constraints.
+        Use this for testing and result output only, not training.
+        """
+        prompt  = f"paraphrase: {text}"
+        encoded = self.tokenizer(
+            prompt,
+            return_tensors="pt",
+            max_length=MAX_TOKENS,
+            truncation=True,
+        ).to(self.device)
+
+        with torch.no_grad():
+            outputs = self.model.generate(
+                **encoded,
+                num_return_sequences=n,
+                do_sample=True,
+                temperature=0.9,
+                top_p=0.95,
+                max_new_tokens=200,
+            )
+
+        candidates = [
+            self.tokenizer.decode(o, skip_special_tokens=True)
+            for o in outputs
+        ]
+        
+        print(f"DEBUG raw candidates: {candidates}")
+
+        seen, unique = set(), []
+        for c in candidates:
+            c = c.strip()
+            if c and c not in seen and c != text.strip():
+                seen.add(c)
+                unique.append(c)
+
+        return unique
+    
+
+    def train_step_contrastive(self, original: str, winner: str, loser: str, 
+                                winner_reward: float, loser_reward: float) -> float:
+        prompt = f"paraphrase: {original}"
+        inputs = self.tokenizer(prompt, return_tensors="pt", 
+                                max_length=MAX_TOKENS, truncation=True).to(self.device)
+
+        def get_loss(text):
+            labels = self.tokenizer(text, return_tensors="pt",
+                                    max_length=MAX_TOKENS, truncation=True).input_ids.to(self.device)
+            labels[labels == self.tokenizer.pad_token_id] = -100
+            return self.model(**inputs, labels=labels).loss
+
+        self.optimizer.zero_grad()
+        loss_good = get_loss(winner)
+        loss_bad  = get_loss(loser)
+
+        # Maximise good output, minimise bad output
+        combined = loss_good * winner_reward - loss_bad * (1 - loser_reward) * 0.5
+        combined.backward()
+        torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+        self.optimizer.step()
+
+        if self.scheduler:
+            self.scheduler.step()
+
+        return loss_good.item()
 
     def train_step(self, original: str, rewrite: str, reward: float) -> float:
         self.model.train()
@@ -101,18 +178,20 @@ class Paraphraser:
         self.scaler.step(self.optimizer)
         self.scaler.update()
 
+        if self.scheduler:
+            self.scheduler.step()
+
         return loss.item()
 
     def save(self, epoch: int) -> None:
         path = CKPT_DIR / f"epoch_{epoch}"
         path.mkdir(parents=True, exist_ok=True)
         self.model.save_pretrained(path)
-        self.tokenizer.save_pretrained(path)
         print(f"Checkpoint saved: {path}")
 
     def load(self, checkpoint_path: str) -> None:
         self.model     = T5ForConditionalGeneration.from_pretrained(checkpoint_path).to(self.device)
-        self.tokenizer = T5Tokenizer.from_pretrained(checkpoint_path)
+        self.tokenizer = T5Tokenizer.from_pretrained("google/flan-t5-base")
         self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=LR)
         self.scaler    = torch.cuda.amp.GradScaler(enabled=False)
         print(f"Checkpoint loaded: {checkpoint_path}")
