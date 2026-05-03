@@ -62,7 +62,7 @@ def run_test(checkpoint: str = CHECKPOINT):
 
     rewrites = []
     for original in EXAMPLES:
-        candidates = paraphraser.generate_unconstrained(original, n=4)
+        candidates = paraphraser.generate(original, n=4)
         scored     = score_candidates(original, candidates)
         rewrites.append(scored[0]["text"] if scored else original)
 
@@ -88,7 +88,7 @@ def run_test(checkpoint: str = CHECKPOINT):
                 "reward":          scored[0]["reward"] if scored else None,
             }
             for ex, scored in [
-                (ex, score_candidates(ex, paraphraser.generate_unconstrained(ex, n=4)))
+                (ex, score_candidates(ex, paraphraser.generate(ex, n=4)))
                 for ex in EXAMPLES
             ]
         ]

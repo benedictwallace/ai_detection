@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-BASE_MODEL   = os.getenv("PARAPHRASER_BASE_MODEL", "google/flan-t5-base")
+BASE_MODEL   = os.getenv("PARAPHRASER_BASE_MODEL", "google/flan-t5-large")
 CKPT_DIR     = Path(os.getenv("PARAPHRASER_CHECKPOINT_DIR", "checkpoints/paraphraser"))
 MAX_TOKENS   = int(os.getenv("MAX_TOKENS", 512))
 N_CANDIDATES = int(os.getenv("N_CANDIDATES", 8))

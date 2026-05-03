@@ -227,13 +227,17 @@ def train():
         )
 
         avg_loss = sum(losses) / len(losses) if losses else 0
+
+        evasion, avg_human = evaluate(paraphraser, detector, val_texts, epoch)
+
         logger.info(
             f"Epoch {epoch} complete | "
             f"trained_on={trained_on} | skipped={skipped} | "
             f"avg_loss={avg_loss:.4f}"
+            f"avg_human_score={avg_human}"
         )
 
-        evasion, avg_human = evaluate(paraphraser, detector, val_texts, epoch)
+        
 
         history.append({
             "epoch": epoch,

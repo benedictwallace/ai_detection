@@ -11,8 +11,8 @@ from paraphraser.semantic import semantic_score
 
 load_dotenv()
 
-W_DETECTOR = float(os.getenv("REWARD_WEIGHT_DETECTOR", 0.5))
-W_FLUENCY  = float(os.getenv("REWARD_WEIGHT_FLUENCY",  0.3))
+W_DETECTOR = float(os.getenv("REWARD_WEIGHT_DETECTOR", 0.6))
+W_FLUENCY  = float(os.getenv("REWARD_WEIGHT_FLUENCY",  0.2))
 W_SEMANTIC = float(os.getenv("REWARD_WEIGHT_SEMANTIC", 0.2))
 THRESHOLD  = float(os.getenv("REWARD_THRESHOLD", 0.65))
 
@@ -93,6 +93,10 @@ def score_candidates(original: str, candidates: list[str], detector=None) -> lis
         else:
             r = W_DETECTOR * d + W_FLUENCY * f + W_SEMANTIC * s
         
+        # boost if high detect
+        if d > 0.4:
+            r = r * 1.3 
+
         results.append({
             "text": c, "detector": round(d, 4),
             "fluency": round(f, 4), "semantic": round(s, 4),
