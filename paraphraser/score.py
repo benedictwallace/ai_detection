@@ -67,6 +67,7 @@ def reward(original: str, rewrite: str) -> dict:
 def score_candidates(original: str, candidates: list[str], detector=None) -> list[dict]:
     if detector is None:
         _load_detector()
+        detector = _detector
 
     filtered = []
     for c in candidates:
@@ -80,7 +81,7 @@ def score_candidates(original: str, candidates: list[str], detector=None) -> lis
     candidates = filtered
     
     # Batch all detector calls at once instead of one by one
-    d_scores = _detector.score_batch(candidates)
+    d_scores = detector.score_batch(candidates)
     
     results = []
     for i, c in enumerate(candidates):

@@ -4,6 +4,7 @@ from pathlib import Path
 from transformers import T5ForConditionalGeneration, T5Tokenizer, get_linear_schedule_with_warmup
 from dotenv import load_dotenv
 from peft import get_peft_model, LoraConfig, TaskType, PeftModel
+import copy
 
 load_dotenv()
 
@@ -60,7 +61,7 @@ class Paraphraser:
         )
 
     def generate(self, text: str, n: int = N_CANDIDATES) -> list[str]:
-        prompt = f"Rewrite this sentence using synonyms and a different structure. Do not copy the original wording: {text}"
+        prompt = f"paraphrase: {text}"
         encoded = self.tokenizer(
             prompt,
             return_tensors="pt",
@@ -240,7 +241,6 @@ class Paraphraser:
         print(f"Checkpoint saved: {path}")
 
     def load(self, checkpoint_path: str) -> None:
-        
         base = T5ForConditionalGeneration.from_pretrained(BASE_MODEL).to(self.device)
         for param in base.encoder.parameters():
             param.requires_grad = False
@@ -250,6 +250,12 @@ class Paraphraser:
             filter(lambda p: p.requires_grad, self.model.parameters()), lr=LR
         )
         self.scaler = torch.cuda.amp.GradScaler(enabled=False)
+
+        self.ref_model = copy.deepcopy(base)
+        for param in self.ref_model.parameters():
+            param.requires_grad = False
+        self.ref_model.eval()
+
         print(f"Checkpoint loaded: {checkpoint_path}")
 
 

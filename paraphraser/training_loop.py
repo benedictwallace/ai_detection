@@ -94,8 +94,8 @@ def run_epoch(paraphraser, detector, texts, epoch):
     random.shuffle(texts)
 
     trained_on = 0
-    skipped    = 0
-    losses     = []
+    skipped = 0
+    losses = []
 
     bar = tqdm(texts, desc=f"Epoch {epoch}", unit="sample", ncols=80)
 
@@ -107,7 +107,7 @@ def run_epoch(paraphraser, detector, texts, epoch):
             bar.set_postfix(trained=trained_on, skipped=skipped, loss="n/a")
             continue
 
-        scored = score_candidates(text, candidates)
+        scored = score_candidates(text, candidates, detector=detector)
 
         if not scored:
             skipped += 1
