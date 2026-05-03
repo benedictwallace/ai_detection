@@ -93,7 +93,6 @@ def run_epoch(paraphraser, detector, texts, epoch):
     random.seed(SEED + epoch)
     random.shuffle(texts)
 
-    total      = len(texts)
     trained_on = 0
     skipped    = 0
     losses     = []
@@ -108,36 +107,22 @@ def run_epoch(paraphraser, detector, texts, epoch):
             bar.set_postfix(trained=trained_on, skipped=skipped, loss="n/a")
             continue
 
-        scored  = score_candidates(text, candidates)
-        scored  = normalise_rewards(scored)
-        winners = [r for r in scored if r["passes"]][:TOP_K]
+        scored = score_candidates(text, candidates)
 
-        if not winners:
-            if scored and scored[0]["reward"] > 0.2:
-                loss = paraphraser.train_step(
-                    text, scored[0]["text"], 
-                    scored[0].get("reward_norm", scored[0]["reward"]) * 0.3
-                )
-                losses.append(loss)
-                trained_on += 1
-            else:
-                skipped += 1
+        if not scored:
+            skipped += 1
             continue
 
-        # Contrastive: best vs worst
-        winner = winners[0]
-        loser  = scored[-1]
+        # GRPO trains on ALL candidates, not just winner vs loser
+        loss = paraphraser.train_step_grpo(text, scored)
 
-        loss = paraphraser.train_step_contrastive(
-            text,
-            winner["text"], loser["text"],
-            winner.get("reward_norm", winner["reward"]),
-            loser.get("reward_norm", loser["reward"])
-        )
-        losses.append(loss)
-        trained_on += 1
+        if loss > 0:
+            losses.append(loss)
+            trained_on += 1
+        else:
+            skipped += 1
 
-        avg_loss = sum(losses[-10:]) / len(losses[-10:])
+        avg_loss = sum(losses[-10:]) / len(losses[-10:]) if losses else 0
         bar.set_postfix(trained=trained_on, skipped=skipped, loss=f"{avg_loss:.4f}")
 
     return trained_on, skipped, losses
