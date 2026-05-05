@@ -14,7 +14,7 @@ load_dotenv()
 W_DETECTOR = float(os.getenv("REWARD_WEIGHT_DETECTOR", 0.6))
 W_FLUENCY  = float(os.getenv("REWARD_WEIGHT_FLUENCY",  0.2))
 W_SEMANTIC = float(os.getenv("REWARD_WEIGHT_SEMANTIC", 0.2))
-THRESHOLD  = float(os.getenv("REWARD_THRESHOLD", 0.65))
+THRESHOLD  = float(os.getenv("REWARD_THRESHOLD", 0.3))
 
 _detector  = None
 
@@ -43,7 +43,7 @@ def reward(original: str, rewrite: str) -> dict:
     s = semantic_score(original, rewrite)
 
     # Skip fluency if detector or semantic already make it a reject
-    if d < 0.2 or s < 0.5:
+    if d < 0.05 or s < 0.5:
         return {
             "detector": round(d, 4),
             "fluency":  0.0,
@@ -72,7 +72,7 @@ def score_candidates(original: str, candidates: list[str], detector=None) -> lis
     filtered = []
     for c in candidates:
         ratio = SequenceMatcher(None, original.lower(), c.lower()).ratio()
-        if ratio < 0.9:  # reject if too similar to original
+        if ratio < 0.85:  # reject if too similar to original
             filtered.append(c)
     
     if not filtered:
