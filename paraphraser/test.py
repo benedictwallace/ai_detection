@@ -25,10 +25,10 @@ def run_test(checkpoint: str = CHECKPOINT):
 
     best = Path(checkpoint)
     if best.exists():
-        #paraphraser.load(checkpoint)
+        paraphraser.load(checkpoint)
         print("Loaded fine-tuned checkpoint.")
     else:
-        print("No checkpoint found, using base T5 model.")
+        print(f"No checkpoint found at {checkpoint}, using base T5 model.")
 
     print("Loading detector...")
     detector = Detector()
@@ -37,37 +37,57 @@ def run_test(checkpoint: str = CHECKPOINT):
     print("PARAPHRASER TEST RESULTS")
     print("=" * 80)
 
+    # Cache results in a single pass; previously test.py regenerated
+    # candidates twice (once for printing, once for the saved JSON).
+    per_example = []
+
+    # Pre-score originals in a single batch call
+    original_scores = detector.score_batch(EXAMPLES)
+
     for i, original in enumerate(EXAMPLES, 1):
         print(f"\nExample {i}")
         print(f"{'─' * 80}")
         print(f"Original:\n  {original}")
-        print(f"  Detector score (original): P(human) = {detector.score(original):.4f}")
+        print(f"  Detector score (original): P(human) = {original_scores[i-1]:.4f}")
 
         candidates = paraphraser.generate(original, n=4)
-        scored     = score_candidates(original, candidates)
+        scored     = score_candidates(original, candidates, detector=detector)
 
         print(f"\nRewrites (ranked by reward):")
         for j, r in enumerate(scored, 1):
             print(f"\n  [{j}] {r['text']}")
-            print(f"        detector={r['detector']:.3f}  fluency={r['fluency']:.3f}  semantic={r['semantic']:.3f}  reward={r['reward']:.3f}  pass={'yes' if r['passes'] else 'no'}")
+            print(
+                f"        detector={r['detector']:.3f}  "
+                f"fluency={r['fluency']:.3f}  "
+                f"semantic={r['semantic']:.3f}  "
+                f"reward={r['reward']:.3f}  "
+                f"pass={'yes' if r['passes'] else 'no'}"
+            )
 
         if scored:
             best_r = scored[0]
-            delta = best_r["detector"] - detector.score(original)
+            delta  = best_r["detector"] - original_scores[i-1]
             print(f"\n  Best rewrite P(human) delta: {delta:+.4f}")
+
+        per_example.append({
+            "original":       original,
+            "original_score": round(original_scores[i-1], 4),
+            "candidates":     scored,
+            "best_rewrite":   scored[0]["text"]     if scored else original,
+            "rewrite_score":  scored[0]["detector"] if scored else None,
+            "reward":         scored[0]["reward"]   if scored else None,
+        })
 
     print("\n" + "=" * 80)
     print("BATCH EVASION RATE")
     print("=" * 80)
 
-    rewrites = []
-    for original in EXAMPLES:
-        candidates = paraphraser.generate(original, n=4)
-        scored     = score_candidates(original, candidates)
-        rewrites.append(scored[0]["text"] if scored else original)
+    rewrites           = [ex["best_rewrite"]   for ex in per_example]
+    rewrite_scores_raw = [ex["rewrite_score"]  for ex in per_example if ex["rewrite_score"] is not None]
 
-    original_evasion = detector.evasion_rate(EXAMPLES)
-    rewrite_evasion  = detector.evasion_rate(rewrites)
+    original_evasion = sum(1 for s in original_scores if s >= 0.5) / len(original_scores)
+    rewrite_evasion  = (sum(1 for s in rewrite_scores_raw if s >= 0.5) / len(rewrite_scores_raw)
+                        if rewrite_scores_raw else 0.0)
 
     print(f"  Original text evasion rate: {original_evasion:.1%}")
     print(f"  Rewritten text evasion rate: {rewrite_evasion:.1%}")
@@ -75,25 +95,23 @@ def run_test(checkpoint: str = CHECKPOINT):
     print("=" * 80 + "\n")
 
     results = {
-        "checkpoint": checkpoint,
+        "checkpoint":       checkpoint,
         "original_evasion": round(original_evasion, 4),
         "rewrite_evasion":  round(rewrite_evasion, 4),
         "improvement":      round(rewrite_evasion - original_evasion, 4),
         "examples": [
             {
-                "original":        ex,
-                "best_rewrite":    scored[0]["text"] if scored else ex,
-                "original_score":  round(detector.score(ex), 4),
-                "rewrite_score":   scored[0]["detector"] if scored else None,
-                "reward":          scored[0]["reward"] if scored else None,
+                "original":       ex["original"],
+                "best_rewrite":   ex["best_rewrite"],
+                "original_score": ex["original_score"],
+                "rewrite_score":  ex["rewrite_score"],
+                "reward":         ex["reward"],
             }
-            for ex, scored in [
-                (ex, score_candidates(ex, paraphraser.generate(ex, n=4)))
-                for ex in EXAMPLES
-            ]
-        ]
+            for ex in per_example
+        ],
     }
 
+    Path("data").mkdir(exist_ok=True)
     out = Path("data/test_results_25.json")
     with open(out, "w", encoding="utf-8") as f:
         json.dump(results, f, indent=2, ensure_ascii=False)

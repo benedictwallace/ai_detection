@@ -7,7 +7,7 @@ INPUT_FILE = Path("data/raw/ollama_samples.jsonl")
 OUTPUT_DIR = Path("data/processed")
 SEED       = 42
 MIN_WORDS  = 50
-MAX_WORDS  = 300
+MAX_WORDS  = 350
 
 
 def load(path):
