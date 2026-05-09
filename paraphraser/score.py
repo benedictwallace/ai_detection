@@ -56,7 +56,7 @@ def reward(original: str, rewrite: str) -> dict:
 
     f = fluency_score(rewrite)
 
-    d_shaped = 1.0 / (1.0 + math.exp(-12.0 * (d - 0.5)))
+    d_shaped = d ** 0.6
     r = W_DETECTOR * d_shaped + W_FLUENCY * f + W_SEMANTIC * s
 
     return {

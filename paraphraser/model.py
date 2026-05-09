@@ -108,7 +108,7 @@ class Paraphraser:
 
 
     def train_step_grpo(self, original: str, scored: list[dict],
-                        kl_coeff: float = 0.1) -> float:
+                        kl_coeff: float = 0.01) -> float:
         """
         GRPO: train on all scored candidates simultaneously.
         Each candidate is weighted by its reward normalised across the group.
