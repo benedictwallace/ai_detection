@@ -119,17 +119,27 @@ def run_epoch(paraphraser, detector, texts, epoch):
         # so normalised rewards have signed spread. Returns mean raw policy
         # loss (always positive) when an optimizer step actually ran, or 0.0
         # when it bailed before stepping.
-        loss = paraphraser.train_step_grpo(text, scored)
+        result = paraphraser.train_step_grpo(text, scored)
 
-        if loss > 0:
-            losses.append(loss)
+        if result is not None:
+            losses.append(result)  # dict with grpo_loss and raw_loss
             trained_on += 1
         else:
             skipped += 1
             skip_reasons["zero_loss"] += 1
 
-        avg_loss = sum(losses[-10:]) / len(losses[-10:]) if losses else 0
-        bar.set_postfix(trained=trained_on, **skip_reasons, loss=f"{avg_loss:.4f}")
+        # Show both losses in the progress bar
+        recent = losses[-10:]
+        if recent:
+            avg_grpo = sum(r["grpo_loss"] for r in recent) / len(recent)
+            avg_raw  = sum(r["raw_loss"]  for r in recent) / len(recent)
+            bar.set_postfix(
+                trained=trained_on, **skip_reasons,
+                grpo=f"{avg_grpo:+.4f}", raw=f"{avg_raw:.4f}",
+            )
+        else:
+            bar.set_postfix(trained=trained_on, **skip_reasons, grpo="n/a", raw="n/a")
+
 
     return trained_on, skipped, losses
 
@@ -210,13 +220,16 @@ def train():
     logger.info("Loading models...")
     detector    = Detector()
     paraphraser = Paraphraser()
-    
-    sft_path = Path("checkpoints/paraphraser/sft_init")
+
+    # CHECKPOINT PATH ===============================================================
+    sft_path = Path("checkpoints/paraphraser/epoch_3")
     if sft_path.exists():
         paraphraser.load(str(sft_path))
         logger.info(f"Loaded SFT warm-start from {sft_path}")
     else:
         logger.warning(f"No SFT checkpoint at {sft_path}, starting from base model")    
+    # ===============================================================
+
 
     # Estimate scheduler size based on expected real step count.
     # We empirically expect ~30-50% of samples to actually take an optimizer

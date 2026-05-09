@@ -1,5 +1,6 @@
 import sys
 import os
+import math
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from difflib import SequenceMatcher
@@ -44,7 +45,7 @@ def reward(original: str, rewrite: str) -> dict:
     s = semantic_score(original, rewrite)
 
     # Skip fluency if detector or semantic already make it a reject
-    if d < 0.05 or s < 0.5:
+    if d < 0.05 or s < 0.65:
         return {
             "detector": round(d, 4),
             "fluency":  0.0,
@@ -54,7 +55,9 @@ def reward(original: str, rewrite: str) -> dict:
         }
 
     f = fluency_score(rewrite)
-    r = W_DETECTOR * d + W_FLUENCY * f + W_SEMANTIC * s
+
+    d_shaped = 1.0 / (1.0 + math.exp(-12.0 * (d - 0.5)))
+    r = W_DETECTOR * d_shaped + W_FLUENCY * f + W_SEMANTIC * s
 
     return {
         "detector": round(d, 4),

@@ -83,9 +83,9 @@ class Paraphraser:
                 **encoded,
                 num_return_sequences=n,
                 do_sample=True,
-                temperature=0.9,
-                top_p=0.95,
-                top_k=50,
+                temperature=1.1,
+                top_p=0.98,
+                top_k=0,
                 repetition_penalty=1.2,
                 min_new_tokens=min_length,
                 max_new_tokens=max_length,
@@ -120,11 +120,11 @@ class Paraphraser:
         """
         self.model.train()
 
-        # Need at least 2 candidates for normalisation to be meaningful.
-        # Do NOT filter by reward > 0; GRPO needs the full reward spread,
-        # including the bad candidates, to produce signed normalised rewards.
-        if len(scored) < 2:
-            return 0.0
+        # Remove bottom half of candiates
+
+        TOP_K_FOR_GRPO = int(N_CANDIDATES/2)
+        if len(scored) > TOP_K_FOR_GRPO:
+            scored = scored[:TOP_K_FOR_GRPO]
 
         prompt = PROMPT_TEMPLATE.format(text=original)
         inputs = self.tokenizer(
@@ -137,7 +137,7 @@ class Paraphraser:
         mean_r  = sum(rewards) / len(rewards)
         std_r   = (sum((x - mean_r) ** 2 for x in rewards) / len(rewards)) ** 0.5
         if std_r < 1e-7:
-            return 0.0
+            return None
 
         self.optimizer.zero_grad()
         losses = []
@@ -185,7 +185,7 @@ class Paraphraser:
                 raw_policy_losses.append(policy_loss.item())
 
         if not losses:
-            return 0.0
+            return None
 
         total_loss = torch.stack(losses).mean()
 
@@ -196,10 +196,17 @@ class Paraphraser:
         if self.scheduler:
             self.scheduler.step()
 
-        # Return mean raw policy loss for monitoring.
-        # Always > 0 when an optimizer step was actually taken,
-        # so the `if loss > 0` check in training_loop is now meaningful.
-        return sum(raw_policy_losses) / len(raw_policy_losses)
+        # Return both:
+        #   grpo_loss: the actual objective being minimised. Can be negative
+        #              when high-reward candidates dominate the gradient.
+        #              Trending more-negative = model being reinforced toward winners.
+        #   raw_loss:  mean cross-entropy NLL across the group. Always positive.
+        #              Useful as a sanity check that the model still finds its
+        #              candidates plausible.
+        return {
+            "grpo_loss": total_loss.item(),
+            "raw_loss":  sum(raw_policy_losses) / len(raw_policy_losses),
+        }
 
     def train_step_contrastive(self, original: str, winner: str, loser: str,
                                 winner_reward: float, loser_reward: float) -> float:
