@@ -8,7 +8,7 @@ from paraphraser.model import Paraphraser
 from paraphraser.score import score_candidates
 from detector.detector import Detector
 
-CHECKPOINT = os.getenv("PARAPHRASER_CHECKPOINT", "checkpoints/paraphraser/epoch_2/")
+CHECKPOINT = os.getenv("PARAPHRASER_CHECKPOINT", "past_versions/12_05/epoch_1/")
 
 EXAMPLES = [
     "The utilization of artificial intelligence in modern healthcare systems has demonstrated significant improvements in diagnostic accuracy and patient outcomes across multiple clinical domains.",

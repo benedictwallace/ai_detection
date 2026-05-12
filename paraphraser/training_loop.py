@@ -1,5 +1,6 @@
 import sys
 import os
+import time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -11,6 +12,7 @@ import logging
 from pathlib import Path
 from dotenv import load_dotenv
 from tqdm import tqdm
+import torch
 
 from paraphraser.model import Paraphraser
 from paraphraser.score import score_candidates
@@ -95,10 +97,19 @@ def run_epoch(paraphraser, detector, texts, epoch):
         "zero_loss":     0,
     }
 
+    total_kept    = 0   # sum of len(scored) over non-empty samples
+    samples_kept = 0 # count of samples with survivors
+
     bar = tqdm(texts, desc=f"Epoch {epoch}", unit="sample", ncols=160)
 
     for text in bar:
+
+        if torch.cuda.is_available(): torch.cuda.synchronize()
+        t = time.perf_counter()
         candidates = paraphraser.generate(text, n=N_CANDIDATES)
+        if torch.cuda.is_available(): torch.cuda.synchronize()
+        t_gen = time.perf_counter() - t
+
 
         if not candidates:
             skipped += 1
@@ -108,12 +119,20 @@ def run_epoch(paraphraser, detector, texts, epoch):
 
         # score_candidates already drops too-similar and too-short candidates,
         # so the duplicate pre-filter that used to live here has been removed.
+        t = time.perf_counter()
         scored = score_candidates(text, candidates, detector=detector)
+        if torch.cuda.is_available(): torch.cuda.synchronize()
+        t_score = time.perf_counter() - t
 
+        print(f"[loop timing] generate={t_gen:.2f}s  score={t_score:.2f}s  n_cands={len(candidates)}  n_scored={len(scored)}")
+        
         if not scored:
             skipped += 1
             skip_reasons["no_scored"] += 1
             continue
+
+        total_kept   += len(scored)
+        samples_kept += 1
 
         # GRPO trains on ALL scored candidates (including low-reward ones)
         # so normalised rewards have signed spread. Returns mean raw policy
@@ -129,6 +148,7 @@ def run_epoch(paraphraser, detector, texts, epoch):
             skip_reasons["zero_loss"] += 1
 
         # Show both losses in the progress bar
+        avg_group = total_kept / samples_kept if samples_kept else 0
         recent = losses[-10:]
         if recent:
             avg_grpo = sum(r["grpo_loss"] for r in recent) / len(recent)
@@ -138,7 +158,7 @@ def run_epoch(paraphraser, detector, texts, epoch):
                 grpo=f"{avg_grpo:+.4f}", raw=f"{avg_raw:.4f}",
             )
         else:
-            bar.set_postfix(trained=trained_on, **skip_reasons, grpo="n/a", raw="n/a")
+            bar.set_postfix(trained=trained_on, **skip_reasons, grpo="n/a", raw="n/a", grp=f"{avg_group:.1f}")
 
 
     return trained_on, skipped, losses
@@ -222,7 +242,7 @@ def train():
     paraphraser = Paraphraser()
 
     # CHECKPOINT PATH ===============================================================
-    sft_path = Path("checkpoints/paraphraser/epoch_3")
+    sft_path = Path("checkpoints/paraphraser/sft_init")
     if sft_path.exists():
         paraphraser.load(str(sft_path))
         logger.info(f"Loaded SFT warm-start from {sft_path}")
@@ -258,14 +278,19 @@ def train():
             paraphraser, detector, train_texts, epoch
         )
 
-        avg_loss = sum(epoch_losses) / len(epoch_losses) if epoch_losses else 0.0
+        if epoch_losses:
+            avg_grpo = sum(r["grpo_loss"] for r in epoch_losses) / len(epoch_losses)
+            avg_raw  = sum(r["raw_loss"]  for r in epoch_losses) / len(epoch_losses)
+        else:
+            avg_grpo = 0.0
+            avg_raw  = 0.0
 
         evasion, avg_human = evaluate(paraphraser, detector, eval_slice, epoch)
 
         logger.info(
             f"Epoch {epoch} complete | "
             f"trained_on={trained_on} | skipped={skipped} | "
-            f"avg_loss={avg_loss:.4f} | "
+            f"avg_grpo_loss={avg_grpo:+.4f} | avg_raw_loss={avg_raw:.4f} | "
             f"avg_human_score={avg_human:.4f}"
         )
 
@@ -273,10 +298,11 @@ def train():
             "epoch":           epoch,
             "trained_on":      trained_on,
             "skipped":         skipped,
-            "avg_loss":        round(avg_loss, 4),
-            "evasion":         round(evasion, 4),
+            "avg_grpo_loss":   round(avg_grpo, 4),
+            "avg_raw_loss":    round(avg_raw,  4),
+            "evasion":         round(evasion,  4),
             "avg_human_score": round(avg_human, 4),
-        })
+    })
 
         paraphraser.save(epoch)
 

@@ -27,45 +27,47 @@ def _load_detector():
         _detector = Detector()
 
 
-def reward(original: str, rewrite: str) -> dict:
-    _load_detector()
+# def reward(original: str, rewrite: str) -> dict:
 
-    original_words = len(original.split())
-    rewrite_words  = len(rewrite.split())
-    if rewrite_words < original_words * 0.3:
-        return {
-            "detector": 0.0,
-            "fluency":  0.0,
-            "semantic": 0.0,
-            "reward":   0.0,
-            "passes":   False,
-        }
+#     # NOT USEEEDDDDDD
+#     _load_detector()
 
-    d = _detector.score(rewrite)
-    s = semantic_score(original, rewrite)
+#     original_words = len(original.split())
+#     rewrite_words  = len(rewrite.split())
+#     if rewrite_words < original_words * 0.3:
+#         return {
+#             "detector": 0.0,
+#             "fluency":  0.0,
+#             "semantic": 0.0,
+#             "reward":   0.0,
+#             "passes":   False,
+#         }
 
-    # Skip fluency if detector or semantic already make it a reject
-    if d < 0.05 or s < 0.65:
-        return {
-            "detector": round(d, 4),
-            "fluency":  0.0,
-            "semantic": round(s, 4),
-            "reward":   0.0,
-            "passes":   False,
-        }
+#     d = _detector.score(rewrite)
+#     s = semantic_score(original, rewrite)
 
-    f = fluency_score(rewrite)
+#     # Skip fluency if detector or semantic already make it a reject
+#     if d < 0.05 or s < 0.65:
+#         return {
+#             "detector": round(d, 4),
+#             "fluency":  0.0,
+#             "semantic": round(s, 4),
+#             "reward":   0.0,
+#             "passes":   False,
+#         }
 
-    d_shaped = d ** 0.6
-    r = W_DETECTOR * d_shaped + W_FLUENCY * f + W_SEMANTIC * s
+#     f = fluency_score(rewrite)
 
-    return {
-        "detector": round(d, 4),
-        "fluency":  round(f, 4),
-        "semantic": round(s, 4),
-        "reward":   round(r, 4),
-        "passes":   r >= THRESHOLD,
-    }
+#     d_shaped = d ** 0.6
+#     r = W_DETECTOR * d_shaped + W_FLUENCY * f + W_SEMANTIC * s
+
+#     return {
+#         "detector": round(d, 4),
+#         "fluency":  round(f, 4),
+#         "semantic": round(s, 4),
+#         "reward":   round(r, 4),
+#         "passes":   r >= THRESHOLD,
+#     }
 
 
 def score_candidates(original: str, candidates: list[str], detector=None) -> list[dict]:
@@ -81,35 +83,50 @@ def score_candidates(original: str, candidates: list[str], detector=None) -> lis
     # Single pre-filter: too similar to original is the only structural reject
     # done up front. The length check is done before any model calls below
     # to save compute (was previously done after fluency/semantic forward passes).
-    filtered = []
+    original_words = len(original.split())
+
+    # pre model check filter
+    stage1 = []
     for c in candidates:
         if len(c.split()) < 5:
+            continue
+        if len(c.split()) < original_words * 0.3:
             continue
         ratio = SequenceMatcher(None, original.lower(), c.lower()).ratio()
         if ratio >= 0.95:
             continue
-        filtered.append(c)
+        stage1.append(c)
 
-    if not filtered:
+    if not stage1:
         return []
 
-    # Batch all detector calls at once instead of one by one
-    d_scores = detector.score_batch(filtered)
+    # dector score filter
+    d_scores = detector.score_batch(stage1)
 
-    results = []
-    for i, c in enumerate(filtered):
-        d = d_scores[i]
-        f = fluency_score(c)
+    stage2 = [(c, d) for c, d in zip(stage1, d_scores) if d >= 0.05]
+    if not stage2:
+        return []
+    
+    # semantic score filter
+    stage3 = []
+    for c, d in stage2:
         s = semantic_score(original, c)
+        if s < 0.65:
+            continue
+        stage3.append((c, d, s))
 
-        r = W_DETECTOR * d + W_FLUENCY * f + W_SEMANTIC * s
+    if not stage3:
+        return []
+    
+    # passed run fluency
+    results = []
+    for c, d, s in stage3:
+        f = fluency_score(c)
 
-        # Smooth boost for high-detector candidates instead of the previous
-        # discontinuous `if d > 0.4: r *= 1.3`. Smoothly ramps from 1.0 to
-        # ~1.3 around d=0.4 using a sigmoid; gradient signal stays continuous.
-        import math
-        boost = 1.0 + 0.3 / (1.0 + math.exp(-10.0 * (d - 0.4)))
-        r *= boost
+        # Square-root shaping on detector
+        d_shaped = d ** 0.6
+
+        r = W_DETECTOR * d_shaped + W_FLUENCY * f + W_SEMANTIC * s
 
         results.append({
             "text":     c,
@@ -124,16 +141,16 @@ def score_candidates(original: str, candidates: list[str], detector=None) -> lis
     return results
 
 
-def top_k(original: str, candidates: list[str], k: int = 3) -> list[dict]:
-    """
-    Return the top-k candidates that pass the reward threshold,
-    sorted by reward descending. Returns fewer than k if not enough
-    candidates pass. Currently unused by the GRPO training path but
-    kept for offline analysis and inference.
-    """
-    scored  = score_candidates(original, candidates)
-    passing = [r for r in scored if r["passes"]]
-    return passing[:k]
+# def top_k(original: str, candidates: list[str], k: int = 3) -> list[dict]:
+#     """
+#     Return the top-k candidates that pass the reward threshold,
+#     sorted by reward descending. Returns fewer than k if not enough
+#     candidates pass. Currently unused by the GRPO training path but
+#     kept for offline analysis and inference.
+#     """
+#     scored  = score_candidates(original, candidates)
+#     passing = [r for r in scored if r["passes"]]
+#     return passing[:k]
 
 
 if __name__ == "__main__":

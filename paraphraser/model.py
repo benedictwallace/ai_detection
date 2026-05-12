@@ -2,6 +2,7 @@ import os
 import copy
 import torch
 import torch.nn.functional as F
+import time
 from pathlib import Path
 from transformers import T5ForConditionalGeneration, T5Tokenizer, get_linear_schedule_with_warmup
 from dotenv import load_dotenv
@@ -108,7 +109,7 @@ class Paraphraser:
 
 
     def train_step_grpo(self, original: str, scored: list[dict],
-                        kl_coeff: float = 0.01) -> float:
+                        kl_coeff: float = 0.1) -> float:
         """
         GRPO: train on all scored candidates simultaneously.
         Each candidate is weighted by its reward normalised across the group.
@@ -120,11 +121,22 @@ class Paraphraser:
         """
         self.model.train()
 
-        # Remove bottom half of candiates
+        # # Remove bottom half of candiates
+        # TOP_K_FOR_GRPO = int(N_CANDIDATES/2)
+        # if len(scored) > TOP_K_FOR_GRPO:
+        #     scored = scored[:TOP_K_FOR_GRPO]
+        
+        scored = [r for r in scored if r["reward"] > 0]
+        if len(scored) < 2:
+            return None
+        
+        timings = {}
+        def tick(label, start):
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+            timings[label] = time.perf_counter() - start
 
-        TOP_K_FOR_GRPO = int(N_CANDIDATES/2)
-        if len(scored) > TOP_K_FOR_GRPO:
-            scored = scored[:TOP_K_FOR_GRPO]
+        t0 = time.perf_counter()
 
         prompt = PROMPT_TEMPLATE.format(text=original)
         inputs = self.tokenizer(
@@ -138,10 +150,18 @@ class Paraphraser:
         std_r   = (sum((x - mean_r) ** 2 for x in rewards) / len(rewards)) ** 0.5
         if std_r < 1e-7:
             return None
+        
+        tick("setup", t0)
 
         self.optimizer.zero_grad()
         losses = []
         raw_policy_losses = []  # for monitoring; always positive
+
+
+        total_policy = 0.0
+        total_ref    = 0.0
+        total_kl     = 0.0
+        total_n      = 0
 
         for r in scored:
             norm_reward = (r["reward"] - mean_r) / (std_r + 1e-8)
@@ -153,17 +173,25 @@ class Paraphraser:
             ).input_ids.to(self.device)
             labels[labels == self.tokenizer.pad_token_id] = -100
 
+            t = time.perf_counter()
             # Policy forward pass with adapters ON
             policy_out    = self.model(**inputs, labels=labels)
             policy_loss   = policy_out.loss
             policy_logits = policy_out.logits
 
+            if torch.cuda.is_available(): torch.cuda.synchronize()
+            total_policy += time.perf_counter() - t
+
+            t = time.perf_counter()
             # Reference forward pass with adapters OFF (same base weights).
             # No deepcopy needed; PEFT toggles the LoRA contribution.
             with torch.no_grad():
                 with self.model.disable_adapter():
                     ref_logits = self.model(**inputs, labels=labels).logits
 
+            total_ref += time.perf_counter() - t
+
+            t = time.perf_counter()
             # Proper token-level KL divergence between policy and reference
             # output distributions. Penalises drift in either direction,
             # unlike the previous clamp(policy_loss - ref_loss, min=0) hack.
@@ -174,6 +202,11 @@ class Paraphraser:
                 reduction="none",
             ).sum(dim=-1, keepdim=True)
             kl_penalty = (kl_per_token * label_mask).sum() / label_mask.sum().clamp(min=1.0)
+
+            if torch.cuda.is_available(): torch.cuda.synchronize()
+            total_kl += time.perf_counter() - t
+            total_n  += 1
+
 
             # Sign convention: minimise NLL for high-reward candidates,
             # maximise it for low-reward ones. The previous +policy_loss * norm_reward
@@ -187,6 +220,8 @@ class Paraphraser:
         if not losses:
             return None
 
+
+        t = time.perf_counter()
         total_loss = torch.stack(losses).mean()
 
         total_loss.backward()
@@ -196,6 +231,18 @@ class Paraphraser:
         if self.scheduler:
             self.scheduler.step()
 
+        if torch.cuda.is_available(): torch.cuda.synchronize()
+        timings["backward+step"] = time.perf_counter() - t
+
+        timings["policy_fwd_total"] = total_policy
+        timings["ref_fwd_total"]    = total_ref
+        timings["kl_total"]         = total_kl
+        timings["n_candidates"]     = total_n
+
+        print(f"[grpo timing] " + " | ".join(
+            f"{k}={v:.3f}s" if isinstance(v, float) else f"{k}={v}"
+            for k, v in timings.items()
+        ))
         # Return both:
         #   grpo_loss: the actual objective being minimised. Can be negative
         #              when high-reward candidates dominate the gradient.
