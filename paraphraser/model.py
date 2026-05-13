@@ -2,7 +2,7 @@ import os
 import copy
 import torch
 import torch.nn.functional as F
-import time
+
 from pathlib import Path
 from transformers import T5ForConditionalGeneration, T5Tokenizer, get_linear_schedule_with_warmup
 from dotenv import load_dotenv
@@ -14,13 +14,9 @@ BASE_MODEL   = os.getenv("PARAPHRASER_BASE_MODEL", "google/flan-t5-large")
 CKPT_DIR     = Path(os.getenv("PARAPHRASER_CHECKPOINT_DIR", "checkpoints/paraphraser"))
 MAX_TOKENS   = int(os.getenv("MAX_TOKENS", 512))
 N_CANDIDATES = int(os.getenv("N_CANDIDATES", 8))
-LR           = float(os.getenv("LEARNING_RATE", 2e-4))
+LR           = float(os.getenv("LEARNING_RATE", 2e-5))
 
-# Single canonical prompt used everywhere: generation, scoring conditioning,
-# and every training step. Mismatched prompts attach reward signal to the
-# wrong context and waste training.
 PROMPT_TEMPLATE = "Rewrite this in a casual, conversational tone: {text}"
-
 
 class Paraphraser:
 
@@ -45,16 +41,11 @@ class Paraphraser:
         self.model = get_peft_model(base, lora_config)
         self.model.print_trainable_parameters()
 
-        # No separate ref_model copy. Instead we use PEFT's disable_adapter()
-        # context to get reference logits from the same base weights with
-        # adapters turned off. Saves ~3 GB VRAM and avoids the deepcopy bug
-        # where ref_model would inherit the LoRA-injected base.
-
         self.optimizer = torch.optim.AdamW(
             filter(lambda p: p.requires_grad, self.model.parameters()),
             lr=LR
         )
-        self.scaler    = torch.cuda.amp.GradScaler(enabled=False)
+        self.scaler = torch.cuda.amp.GradScaler(enabled=False)
         self.scheduler = None
         print(f"Paraphraser loaded: {model_name} on {self.device}")
 
@@ -84,7 +75,7 @@ class Paraphraser:
                 **encoded,
                 num_return_sequences=n,
                 do_sample=True,
-                temperature=1.1,
+                temperature=1,
                 top_p=0.98,
                 top_k=0,
                 repetition_penalty=1.2,
@@ -109,34 +100,21 @@ class Paraphraser:
 
 
     def train_step_grpo(self, original: str, scored: list[dict],
-                        kl_coeff: float = 0.1) -> float:
+                        kl_coeff: float = 0.02) -> float:
         """
         GRPO: train on all scored candidates simultaneously.
         Each candidate is weighted by its reward normalised across the group.
-        A KL penalty vs the frozen ref distribution prevents catastrophic drift.
+        A KL penalty vs the frozen ref distribution prevents huge drift.
 
         Returns the mean *raw* policy loss (cross-entropy) across candidates,
         which is always positive and meaningful for monitoring. Returns 0.0
         only when no optimizer step was taken.
         """
         self.model.train()
-
-        # # Remove bottom half of candiates
-        # TOP_K_FOR_GRPO = int(N_CANDIDATES/2)
-        # if len(scored) > TOP_K_FOR_GRPO:
-        #     scored = scored[:TOP_K_FOR_GRPO]
         
         scored = [r for r in scored if r["reward"] > 0]
         if len(scored) < 2:
             return None
-        
-        timings = {}
-        def tick(label, start):
-            if torch.cuda.is_available():
-                torch.cuda.synchronize()
-            timings[label] = time.perf_counter() - start
-
-        t0 = time.perf_counter()
 
         prompt = PROMPT_TEMPLATE.format(text=original)
         inputs = self.tokenizer(
@@ -150,22 +128,14 @@ class Paraphraser:
         std_r   = (sum((x - mean_r) ** 2 for x in rewards) / len(rewards)) ** 0.5
         if std_r < 1e-7:
             return None
-        
-        tick("setup", t0)
 
         self.optimizer.zero_grad()
         losses = []
         raw_policy_losses = []  # for monitoring; always positive
 
-
-        total_policy = 0.0
-        total_ref    = 0.0
-        total_kl     = 0.0
-        total_n      = 0
-
         for r in scored:
             norm_reward = (r["reward"] - mean_r) / (std_r + 1e-8)
-            norm_reward = max(-3.0, min(3.0, norm_reward))
+            norm_reward = max(-1.5, min(1.5, norm_reward))
 
             labels = self.tokenizer(
                 r["text"], return_tensors="pt",
@@ -173,28 +143,18 @@ class Paraphraser:
             ).input_ids.to(self.device)
             labels[labels == self.tokenizer.pad_token_id] = -100
 
-            t = time.perf_counter()
             # Policy forward pass with adapters ON
-            policy_out    = self.model(**inputs, labels=labels)
-            policy_loss   = policy_out.loss
+            policy_out = self.model(**inputs, labels=labels)
+            policy_loss = policy_out.loss
             policy_logits = policy_out.logits
 
-            if torch.cuda.is_available(): torch.cuda.synchronize()
-            total_policy += time.perf_counter() - t
-
-            t = time.perf_counter()
             # Reference forward pass with adapters OFF (same base weights).
             # No deepcopy needed; PEFT toggles the LoRA contribution.
             with torch.no_grad():
                 with self.model.disable_adapter():
                     ref_logits = self.model(**inputs, labels=labels).logits
 
-            total_ref += time.perf_counter() - t
-
-            t = time.perf_counter()
-            # Proper token-level KL divergence between policy and reference
-            # output distributions. Penalises drift in either direction,
-            # unlike the previous clamp(policy_loss - ref_loss, min=0) hack.
+            # Proper token-level KL divergence between policy and reference output distributions. Penalises drift in either direction.
             label_mask = (labels != -100).unsqueeze(-1).float()
             kl_per_token = F.kl_div(
                 F.log_softmax(policy_logits, dim=-1),
@@ -203,14 +163,7 @@ class Paraphraser:
             ).sum(dim=-1, keepdim=True)
             kl_penalty = (kl_per_token * label_mask).sum() / label_mask.sum().clamp(min=1.0)
 
-            if torch.cuda.is_available(): torch.cuda.synchronize()
-            total_kl += time.perf_counter() - t
-            total_n  += 1
-
-
-            # Sign convention: minimise NLL for high-reward candidates,
-            # maximise it for low-reward ones. The previous +policy_loss * norm_reward
-            # was training the model to AVOID high-reward outputs.
+            # minimise NLL for high-reward candidates,
             candidate_loss = -policy_loss * norm_reward + kl_coeff * kl_penalty
 
             if not torch.isnan(candidate_loss) and not torch.isinf(candidate_loss):
@@ -220,8 +173,6 @@ class Paraphraser:
         if not losses:
             return None
 
-
-        t = time.perf_counter()
         total_loss = torch.stack(losses).mean()
 
         total_loss.backward()
@@ -231,108 +182,13 @@ class Paraphraser:
         if self.scheduler:
             self.scheduler.step()
 
-        if torch.cuda.is_available(): torch.cuda.synchronize()
-        timings["backward+step"] = time.perf_counter() - t
-
-        timings["policy_fwd_total"] = total_policy
-        timings["ref_fwd_total"]    = total_ref
-        timings["kl_total"]         = total_kl
-        timings["n_candidates"]     = total_n
-
-        print(f"[grpo timing] " + " | ".join(
-            f"{k}={v:.3f}s" if isinstance(v, float) else f"{k}={v}"
-            for k, v in timings.items()
-        ))
         # Return both:
-        #   grpo_loss: the actual objective being minimised. Can be negative
-        #              when high-reward candidates dominate the gradient.
-        #              Trending more-negative = model being reinforced toward winners.
-        #   raw_loss:  mean cross-entropy NLL across the group. Always positive.
-        #              Useful as a sanity check that the model still finds its
-        #              candidates plausible.
+        #   grpo_loss: the actual objective being minimised. Can be negative when high-reward candidates dominate the gradient.
+        #   raw_loss: mean cross-entropy NLL across the group. Always positive. Useful as a sanity check that the model still finds its candidates plausible.
         return {
             "grpo_loss": total_loss.item(),
             "raw_loss":  sum(raw_policy_losses) / len(raw_policy_losses),
         }
-
-    def train_step_contrastive(self, original: str, winner: str, loser: str,
-                                winner_reward: float, loser_reward: float) -> float:
-        """
-        Pairwise contrastive update. Currently unused by the training loop
-        but kept available. Uses the same canonical prompt as the rest of
-        the pipeline.
-        """
-        prompt = PROMPT_TEMPLATE.format(text=original)
-        inputs = self.tokenizer(prompt, return_tensors="pt",
-                                max_length=MAX_TOKENS, truncation=True).to(self.device)
-
-        def get_loss(text):
-            labels = self.tokenizer(text, return_tensors="pt",
-                                    max_length=MAX_TOKENS, truncation=True).input_ids.to(self.device)
-            labels[labels == self.tokenizer.pad_token_id] = -100
-            return self.model(**inputs, labels=labels).loss
-
-        self.optimizer.zero_grad()
-        loss_good = get_loss(winner)
-        loss_bad  = get_loss(loser)
-
-        # Bound the negative term so the loss can't run away to -inf
-        margin = torch.clamp(loss_bad - loss_good, max=2.0)
-        combined = loss_good * winner_reward - margin * (1 - loser_reward) * 0.5
-
-        combined.backward()
-        torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
-        self.optimizer.step()
-
-        if self.scheduler:
-            self.scheduler.step()
-
-        return loss_good.item()
-
-    def train_step(self, original: str, rewrite: str, reward: float) -> float:
-        """
-        Single-sample reward-weighted update. Currently unused by the
-        training loop but kept available. Uses the canonical prompt.
-        """
-        self.model.train()
-
-        prompt = PROMPT_TEMPLATE.format(text=original)
-        inputs = self.tokenizer(
-            prompt,
-            return_tensors="pt",
-            max_length=MAX_TOKENS,
-            truncation=True,
-        ).to(self.device)
-
-        labels = self.tokenizer(
-            rewrite,
-            return_tensors="pt",
-            max_length=MAX_TOKENS,
-            truncation=True,
-        ).input_ids.to(self.device)
-
-        labels[labels == self.tokenizer.pad_token_id] = -100
-
-        self.optimizer.zero_grad()
-
-        with torch.cuda.amp.autocast(enabled=False):
-            loss          = self.model(**inputs, labels=labels).loss
-            weighted_loss = loss * max(reward, 1e-8)
-
-        if torch.isnan(loss) or torch.isinf(loss):
-            self.optimizer.zero_grad()
-            return 0.0
-
-        self.scaler.scale(weighted_loss).backward()
-        self.scaler.unscale_(self.optimizer)
-        torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
-        self.scaler.step(self.optimizer)
-        self.scaler.update()
-
-        if self.scheduler:
-            self.scheduler.step()
-
-        return loss.item()
 
     def save(self, epoch: int) -> None:
         path = CKPT_DIR / f"epoch_{epoch}"
@@ -346,10 +202,6 @@ class Paraphraser:
         for param in base.encoder.parameters():
             param.requires_grad = False
 
-        # Pass is_trainable=True so PEFT keeps the LoRA adapters in train mode.
-        # Without this they're loaded in inference mode (requires_grad=False on
-        # all adapter weights), which causes AdamW to receive an empty
-        # parameter list and crash.
         self.model = PeftModel.from_pretrained(
             base, checkpoint_path, is_trainable=True
         ).to(self.device)

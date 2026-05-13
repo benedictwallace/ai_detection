@@ -1,6 +1,6 @@
 import sys
 import os
-import time
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -12,7 +12,6 @@ import logging
 from pathlib import Path
 from dotenv import load_dotenv
 from tqdm import tqdm
-import torch
 
 from paraphraser.model import Paraphraser
 from paraphraser.score import score_candidates
@@ -97,47 +96,51 @@ def run_epoch(paraphraser, detector, texts, epoch):
         "zero_loss":     0,
     }
 
-    total_kept    = 0   # sum of len(scored) over non-empty samples
+    total_kept = 0   # sum of len(scored) over non-empty samples
     samples_kept = 0 # count of samples with survivors
 
-    bar = tqdm(texts, desc=f"Epoch {epoch}", unit="sample", ncols=160)
+    bar = tqdm(texts, desc=f"Epoch {epoch}", unit="sample")
+
+
+    def update_bar():
+        avg_group = total_kept / samples_kept if samples_kept else 0.0
+        recent = losses[-10:]
+        if recent:
+            avg_grpo = sum(r["grpo_loss"] for r in recent) / len(recent)
+            avg_raw  = sum(r["raw_loss"]  for r in recent) / len(recent)
+            bar.set_postfix(
+                trained=trained_on, **skip_reasons,
+                grpo=f"{avg_grpo:+.4f}", raw=f"{avg_raw:.4f}",
+                grp=f"{avg_group:.1f}",
+            )
+        else:
+            bar.set_postfix(
+                trained=trained_on, **skip_reasons,
+                grpo="n/a", raw="n/a",
+                grp=f"{avg_group:.1f}",
+            )
 
     for text in bar:
-
-        if torch.cuda.is_available(): torch.cuda.synchronize()
-        t = time.perf_counter()
         candidates = paraphraser.generate(text, n=N_CANDIDATES)
-        if torch.cuda.is_available(): torch.cuda.synchronize()
-        t_gen = time.perf_counter() - t
-
 
         if not candidates:
             skipped += 1
             skip_reasons["no_candidates"] += 1
-            bar.set_postfix(trained=trained_on, skipped=skipped, loss="n/a")
+            update_bar()
             continue
 
-        # score_candidates already drops too-similar and too-short candidates,
-        # so the duplicate pre-filter that used to live here has been removed.
-        t = time.perf_counter()
         scored = score_candidates(text, candidates, detector=detector)
-        if torch.cuda.is_available(): torch.cuda.synchronize()
-        t_score = time.perf_counter() - t
 
-        print(f"[loop timing] generate={t_gen:.2f}s  score={t_score:.2f}s  n_cands={len(candidates)}  n_scored={len(scored)}")
-        
+
         if not scored:
             skipped += 1
             skip_reasons["no_scored"] += 1
+            update_bar()
             continue
 
-        total_kept   += len(scored)
+        total_kept += len(scored)
         samples_kept += 1
 
-        # GRPO trains on ALL scored candidates (including low-reward ones)
-        # so normalised rewards have signed spread. Returns mean raw policy
-        # loss (always positive) when an optimizer step actually ran, or 0.0
-        # when it bailed before stepping.
         result = paraphraser.train_step_grpo(text, scored)
 
         if result is not None:
@@ -147,18 +150,7 @@ def run_epoch(paraphraser, detector, texts, epoch):
             skipped += 1
             skip_reasons["zero_loss"] += 1
 
-        # Show both losses in the progress bar
-        avg_group = total_kept / samples_kept if samples_kept else 0
-        recent = losses[-10:]
-        if recent:
-            avg_grpo = sum(r["grpo_loss"] for r in recent) / len(recent)
-            avg_raw  = sum(r["raw_loss"]  for r in recent) / len(recent)
-            bar.set_postfix(
-                trained=trained_on, **skip_reasons,
-                grpo=f"{avg_grpo:+.4f}", raw=f"{avg_raw:.4f}",
-            )
-        else:
-            bar.set_postfix(trained=trained_on, **skip_reasons, grpo="n/a", raw="n/a", grp=f"{avg_group:.1f}")
+        update_bar()
 
 
     return trained_on, skipped, losses

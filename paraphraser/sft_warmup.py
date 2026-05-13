@@ -42,8 +42,7 @@ logger = logging.getLogger(__name__)
 SFT_FILE   = Path("data/processed/sft_pairs.jsonl")
 SFT_CKPT   = Path("checkpoints/paraphraser/sft_init")
 
-# Smaller batch size so this fits on consumer GPUs (8GB VRAM is enough).
-# Bump SFT_BATCH_SIZE in env if you have more headroom.
+# Bump SFT_BATCH_SIZE in env if on larger GPU
 BATCH_SIZE = int(os.getenv("SFT_BATCH_SIZE", 2))
 EPOCHS     = int(os.getenv("SFT_EPOCHS", 3))   # 3 epochs for ~116 pairs
 LR         = float(os.getenv("SFT_LR", 2e-4))
@@ -56,7 +55,7 @@ SEED       = 42
 
 class SFTDataset(Dataset):
     """
-    Each sample tokenises the canonical PROMPT_TEMPLATE (input) and the
+    Each sample tokenises the PROMPT_TEMPLATE (input) and the
     rewrite (label). Uses dynamic padding inside the collate to avoid
     wasting compute on always-max-length tensors.
     """

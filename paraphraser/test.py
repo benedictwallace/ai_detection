@@ -8,7 +8,7 @@ from paraphraser.model import Paraphraser
 from paraphraser.score import score_candidates
 from detector.detector import Detector
 
-CHECKPOINT = os.getenv("PARAPHRASER_CHECKPOINT", "past_versions/12_05/epoch_1/")
+CHECKPOINT = Path("past_versions/12_05/paraphraser/epoch_1/")
 
 EXAMPLES = [
     "The utilization of artificial intelligence in modern healthcare systems has demonstrated significant improvements in diagnostic accuracy and patient outcomes across multiple clinical domains.",
@@ -95,7 +95,7 @@ def run_test(checkpoint: str = CHECKPOINT):
     print("=" * 80 + "\n")
 
     results = {
-        "checkpoint":       checkpoint,
+        "checkpoint":       str(checkpoint),
         "original_evasion": round(original_evasion, 4),
         "rewrite_evasion":  round(rewrite_evasion, 4),
         "improvement":      round(rewrite_evasion - original_evasion, 4),
